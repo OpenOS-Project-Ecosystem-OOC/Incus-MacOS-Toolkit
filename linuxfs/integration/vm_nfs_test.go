@@ -33,9 +33,9 @@ import (
 )
 
 const (
-	// testMemMiB is the RAM given to the test VM. 512 MiB is enough for Alpine
-	// + NFS server; keep it low so the runner doesn't OOM.
-	testMemMiB = 512
+	// testMemMiB is the RAM given to the test VM. 1 GiB speeds up first-boot
+	// cloud-init package installation on the generic_alpine image.
+	testMemMiB = 1024
 
 	// testSSHPort is the host-side SSH port for the test VM.
 	// Use a non-default port to avoid colliding with other tests.
@@ -60,7 +60,7 @@ func TestVMBootMountNFS(t *testing.T) {
 	requireBinary(t, "mount")
 	requireRoot(t) // NFS client mount requires root on Linux
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	// ── 1. Create ext4 image ─────────────────────────────────────────────────

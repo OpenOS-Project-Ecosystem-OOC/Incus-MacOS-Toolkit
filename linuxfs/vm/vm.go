@@ -183,7 +183,7 @@ func (v *VM) startQEMU() error {
 		return fmt.Errorf("qemu start: %w", err)
 	}
 
-	return v.waitForSSH(120 * time.Second)
+	return v.waitForSSH(300 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.
