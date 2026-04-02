@@ -150,11 +150,16 @@ func (v *VM) startQEMU() error {
 	accel := accelFlag()
 	format := v.provider.ImageFormat()
 
+	serialDev := "null"
+	if v.cfg.Debug {
+		serialDev = "stdio"
+	}
 	args := []string{
 		"-accel", accel,
 		"-m", fmt.Sprintf("%d", v.cfg.MemMiB),
 		"-nographic",
-		"-serial", "mon:stdio",
+		"-serial", serialDev,
+		"-monitor", "none",
 		// VM root disk
 		"-drive", fmt.Sprintf("if=virtio,format=%s,file=%s", format, vmImage),
 		// cloud-init seed ISO
