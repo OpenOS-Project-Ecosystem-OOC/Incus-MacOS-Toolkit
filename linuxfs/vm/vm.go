@@ -175,6 +175,11 @@ func (v *VM) startQEMU() error {
 	)
 
 	v.cmd = exec.CommandContext(v.ctx, binary, args...)
+	// Always redirect stdin from /dev/null so QEMU's -serial mon:stdio
+	// does not block waiting for input when running non-interactively.
+	if f, err := os.Open(os.DevNull); err == nil {
+		v.cmd.Stdin = f
+	}
 	if v.cfg.Debug {
 		v.cmd.Stdout = os.Stdout
 		v.cmd.Stderr = os.Stderr

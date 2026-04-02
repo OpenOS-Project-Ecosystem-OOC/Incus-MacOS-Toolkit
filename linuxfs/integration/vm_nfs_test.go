@@ -105,6 +105,7 @@ func TestVMBootMountNFS(t *testing.T) {
 		DevicePath:    imgPath,
 		SSHPort:       uint16(testSSHPort),
 		ExtraHostFwds: remapped,
+		Debug:         true, // capture QEMU console output in CI logs
 	}, logger)
 	if err != nil {
 		t.Fatalf("vm.New: %v", err)
