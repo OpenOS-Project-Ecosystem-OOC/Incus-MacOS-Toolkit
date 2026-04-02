@@ -27,8 +27,17 @@ BUILD_DIR ?= build/userspace
 # Convenience alias: `make kernel-devel` builds against the bundled btrfs-devel tree.
 BTRFS_DEVEL_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))../btrfs-devel
 
+# VM provisioning parameters (override on command line as needed).
+VM_SSH_PORT ?= 10022
+VM_USER     ?= alpine
+VM_SSH_KEY  ?=
+VM_SSH_OPTS  = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+               -p $(VM_SSH_PORT) \
+               $(if $(VM_SSH_KEY),-i $(VM_SSH_KEY),)
+
 .PHONY: all kernel kernel-devel userspace install install-kernel install-userspace \
-        clean clean-kernel clean-userspace test check fmt
+        clean clean-kernel clean-userspace test check fmt \
+        bdfs-vm-install
 
 all: kernel userspace
 
@@ -97,6 +106,37 @@ check:
 		-DENABLE_ASAN=ON
 	cmake --build build/tests --parallel
 	cd build/tests && ctest --output-on-failure
+
+# ── VM provisioning ──────────────────────────────────────────────────────────
+#
+# bdfs-vm-install uploads the source tree to a running microVM and builds +
+# installs the kernel module, daemon, and CLI inside it.
+#
+# Prerequisites:
+#   - A microVM must be running with SSH forwarded to localhost:$(VM_SSH_PORT).
+#     Start one with: linuxfs --distro alpine shell /dev/null
+#   - The VM user must have passwordless sudo (cloud-init sets this up).
+#
+# Usage:
+#   make bdfs-vm-install                          # Alpine default (port 10022)
+#   make bdfs-vm-install VM_SSH_PORT=10023        # custom port
+#   make bdfs-vm-install VM_USER=debian VM_SSH_PORT=10022
+#   make bdfs-vm-install VM_SSH_KEY=~/.cache/linuxfs/vm_id_ed25519
+
+bdfs-vm-install:
+	@echo "Uploading btrfs-dwarfs source to VM ($(VM_USER)@127.0.0.1:$(VM_SSH_PORT)) ..."
+	ssh $(VM_SSH_OPTS) $(VM_USER)@127.0.0.1 "sudo mkdir -p /opt/bdfs-src && sudo chown $(VM_USER) /opt/bdfs-src"
+	rsync -az --delete \
+	    --exclude='.git' \
+	    --exclude='build/' \
+	    --exclude='*.o' \
+	    --exclude='*.ko' \
+	    -e "ssh $(VM_SSH_OPTS)" \
+	    . $(VM_USER)@127.0.0.1:/opt/bdfs-src/
+	@echo "Running vm-install.sh inside VM ..."
+	ssh $(VM_SSH_OPTS) $(VM_USER)@127.0.0.1 \
+	    "sudo sh /opt/bdfs-src/scripts/vm-install.sh"
+	@echo "bdfs-vm-install complete."
 
 # ── Formatting ───────────────────────────────────────────────────────────────
 

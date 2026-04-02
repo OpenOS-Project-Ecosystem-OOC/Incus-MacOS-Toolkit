@@ -27,19 +27,19 @@ func runMount(args []string) {
 	netShare   := fs.Bool("network-share", false, "Expose share on the local network")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: linuxfs-mac mount [flags] <device>
+		fmt.Fprintf(os.Stderr, `Usage: linuxfs mount [flags] <device>
 
 Mount a block device or disk image containing a Linux filesystem.
 The device is passed through to a Linux microVM which mounts it natively.
 The mounted filesystem is then exposed to the host via a network share.
 
 Examples:
-  linuxfs-mac mount /dev/disk2s1
-  linuxfs-mac mount /dev/disk2s1 --luks /dev/sda1
-  linuxfs-mac mount /dev/disk2s1 --lvm vg0/home
-  linuxfs-mac mount /dev/disk2s1 --read-only
-  linuxfs-mac mount /path/to/disk.img
-  linuxfs-mac mount /dev/disk2s1 --fstype btrfs --mount-opts subvol=@home
+  linuxfs mount /dev/disk2s1
+  linuxfs mount /dev/disk2s1 --luks /dev/sda1
+  linuxfs mount /dev/disk2s1 --lvm vg0/home
+  linuxfs mount /dev/disk2s1 --read-only
+  linuxfs mount /path/to/disk.img
+  linuxfs mount /dev/disk2s1 --fstype btrfs --mount-opts subvol=@home
 
 Flags:
 `)
@@ -128,11 +128,43 @@ Flags:
 		_ = v.Stop()
 	}()
 
-	// TODO: SSH into VM, run mount commands (with LUKS/LVM/fstype/opts),
-	// start share server inside VM, then auto-mount on host.
-	shareURL := backendCfg.MountURL("linuxfs")
-	fmt.Printf("\nVM is running. Share URL: %s\n", shareURL)
+	// ── In-VM mount + share server ────────────────────────────────────────
+	mountOpts_ := mount.MountOptions{
+		// The pass-through device is always the third virtio disk in the VM.
+		InVMDevice: "/dev/vdc",
+		LUKS:       *luks,
+		LVM:        *lvm,
+		FSType:     *fstype,
+		MountOpts:  *mountOpts,
+		ReadOnly:   *readOnly,
+		Backend:    backend,
+		ListenIP:   listenIP,
+	}
 
+	fmt.Println("Setting up filesystem and share server inside VM ...")
+	shareURL, err := mount.Setup(v, mountOpts_)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		os.Exit(1)
+	}
+
+	// ── Persist state for 'list' and 'unmount' ────────────────────────────
+	records, _ := loadMounts()
+	records = append(records, MountRecord{
+		Device:     device,
+		ShareURL:   shareURL,
+		MountPoint: *mountPoint,
+		Backend:    string(backend),
+		VMPid:      v.Pid(),
+		SSHPort:    v.SSHPort,
+	})
+	if err := saveMounts(records); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: could not save mount state: %v\n", err)
+	}
+
+	fmt.Printf("\nShare URL: %s\n", shareURL)
+
+	// ── Auto-mount on host ────────────────────────────────────────────────
 	if *mountPoint != "" {
 		fmt.Printf("Auto-mounting at %s ...\n", *mountPoint)
 		if err := mount.AutoMount(shareURL, *mountPoint); err != nil {
@@ -149,11 +181,31 @@ Flags:
 	}
 
 	fmt.Println("\nPress Ctrl+C to unmount and stop the VM.")
-	// Block until SIGINT or SIGTERM.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	fmt.Println("\nShutting down ...")
+
+	// ── Teardown: unmount host share, stop share server, unmount in VM ────
+	if *mountPoint != "" {
+		if err := mount.AutoUnmount(*mountPoint); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: host unmount: %v\n", err)
+		}
+	}
+	if err := mount.Teardown(v, mountOpts_); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: in-VM teardown: %v\n", err)
+	}
+
+	// Remove from state file.
+	if records, err := loadMounts(); err == nil {
+		var updated []MountRecord
+		for _, r := range records {
+			if r.Device != device {
+				updated = append(updated, r)
+			}
+		}
+		_ = saveMounts(updated)
+	}
 }
 
 func runUnmount(args []string) {
@@ -162,7 +214,7 @@ func runUnmount(args []string) {
 		os.Exit(1)
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: linuxfs-mac unmount <mountpoint>")
+		fmt.Fprintln(os.Stderr, "Usage: linuxfs unmount <mountpoint>")
 		os.Exit(1)
 	}
 	target := fs.Arg(0)
@@ -173,5 +225,3 @@ func runUnmount(args []string) {
 	}
 	fmt.Println("Done.")
 }
-
-

@@ -94,6 +94,14 @@ func (v *VM) User() string {
 	return v.provider.DefaultUser()
 }
 
+// Pid returns the QEMU process PID, or 0 if the VM has not been started.
+func (v *VM) Pid() int {
+	if v.cmd != nil && v.cmd.Process != nil {
+		return v.cmd.Process.Pid
+	}
+	return 0
+}
+
 func (v *VM) startQEMU() error {
 	binary := v.arch.QEMUBinary()
 
