@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// cloud-init seed ISO generation for the Alpine VM.
+// cloudinit.go — cloud-init seed ISO generation.
 //
-// Alpine cloud images support cloud-init. We generate a minimal seed ISO
-// (user-data + meta-data) that sets a known password and injects the host's
-// SSH public key so the tool can SSH in after boot.
+// All supported providers use cloud-init for first-boot configuration.
+// The seed ISO injects an SSH authorized key and installs filesystem tools.
+// Package lists and runcmds come from the Provider so this file stays
+// distro-agnostic.
 
 package vm
 
@@ -13,54 +14,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
-const (
-	// VMUser is the user created inside the Alpine VM.
-	// Exported so cmd/shell.go can reference it for SSH connections.
-	VMUser = "linuxfs"
-	// vmPassword is used as a fallback; SSH key auth is preferred.
-	vmPassword = "linuxfs-mac"
-)
+const vmPassword = "linuxfs-vm"
 
 // EnsureCloudInitSeed creates a cloud-init seed ISO in dir if it doesn't
-// already exist. Returns the path to the ISO.
-func EnsureCloudInitSeed(dir string) (string, error) {
-	seedPath := filepath.Join(dir, "cloud-init-seed.iso")
+// already exist. The ISO is named after the provider to avoid collisions
+// when switching distros. Returns the path to the ISO.
+func EnsureCloudInitSeed(dir string, p Provider) (string, error) {
+	seedPath := filepath.Join(dir, fmt.Sprintf("cloud-init-seed-%s.iso", p.Name()))
 	if _, err := os.Stat(seedPath); err == nil {
 		return seedPath, nil
 	}
 
-	seedDir := filepath.Join(dir, "cloud-init-seed")
+	seedDir := filepath.Join(dir, fmt.Sprintf("cloud-init-seed-%s", p.Name()))
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return "", fmt.Errorf("create seed dir: %w", err)
 	}
 
-	// Read host SSH public key (prefer ed25519, fall back to rsa).
 	sshPubKey, err := readHostSSHPubKey()
 	if err != nil {
-		// No SSH key found — generate one.
 		sshPubKey, err = generateSSHKey(dir)
 		if err != nil {
 			return "", fmt.Errorf("SSH key: %w", err)
 		}
 	}
 
-	userData := fmt.Sprintf(`#cloud-config
-users:
-  - name: %s
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/ash
-    lock_passwd: false
-    passwd: %s
-    ssh_authorized_keys:
-      - %s
-
-ssh_pwauth: true
-disable_root: false
-`, VMUser, vmPassword, sshPubKey)
-
-	metaData := "instance-id: linuxfs-mac-vm\nlocal-hostname: linuxfs-mac\n"
+	userData := buildUserData(p, sshPubKey)
+	metaData := fmt.Sprintf("instance-id: linuxfs-%s-vm\nlocal-hostname: linuxfs-vm\n", p.Name())
 
 	if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userData), 0o600); err != nil {
 		return "", fmt.Errorf("write user-data: %w", err)
@@ -69,12 +51,50 @@ disable_root: false
 		return "", fmt.Errorf("write meta-data: %w", err)
 	}
 
-	// Build the seed ISO using cloud-localds or genisoimage/mkisofs.
 	if err := buildSeedISO(seedDir, seedPath); err != nil {
 		return "", fmt.Errorf("build seed ISO: %w", err)
 	}
-
 	return seedPath, nil
+}
+
+// buildUserData renders the cloud-init user-data for the given provider.
+func buildUserData(p Provider, sshPubKey string) string {
+	// Build YAML package list.
+	var pkgLines strings.Builder
+	for _, pkg := range p.CloudInitPackages() {
+		pkgLines.WriteString(fmt.Sprintf("  - %s\n", pkg))
+	}
+
+	// Build runcmd list.
+	var runcmdLines strings.Builder
+	for _, cmd := range p.CloudInitRuncmds() {
+		runcmdLines.WriteString(fmt.Sprintf("  - %s\n", cmd))
+	}
+
+	return fmt.Sprintf(`#cloud-config
+users:
+  - name: %s
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: %s
+    lock_passwd: false
+    passwd: %s
+    ssh_authorized_keys:
+      - %s
+
+ssh_pwauth: true
+disable_root: false
+
+packages:
+%s
+runcmd:
+%s`,
+		p.DefaultUser(),
+		p.DefaultShell(),
+		vmPassword,
+		sshPubKey,
+		pkgLines.String(),
+		runcmdLines.String(),
+	)
 }
 
 // readHostSSHPubKey returns the first available SSH public key from ~/.ssh/.
@@ -84,10 +104,9 @@ func readHostSSHPubKey() (string, error) {
 		return "", err
 	}
 	for _, name := range []string{"id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"} {
-		path := filepath.Join(home, ".ssh", name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(filepath.Join(home, ".ssh", name))
 		if err == nil {
-			return string(data[:len(data)-1]), nil // trim trailing newline
+			return strings.TrimRight(string(data), "\n"), nil
 		}
 	}
 	return "", fmt.Errorf("no SSH public key found in ~/.ssh/")
@@ -98,18 +117,15 @@ func generateSSHKey(dir string) (string, error) {
 	privPath := filepath.Join(dir, "vm_id_ed25519")
 	pubPath := privPath + ".pub"
 
-	if _, err := os.Stat(pubPath); err == nil {
-		data, err := os.ReadFile(pubPath)
-		if err == nil {
-			return string(data), nil
-		}
+	if data, err := os.ReadFile(pubPath); err == nil {
+		return strings.TrimRight(string(data), "\n"), nil
 	}
 
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		return "", fmt.Errorf("ssh-keygen not found; install OpenSSH")
 	}
 
-	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-f", privPath, "-C", "linuxfs-mac-vm")
+	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-f", privPath, "-C", "linuxfs-vm")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -121,12 +137,11 @@ func generateSSHKey(dir string) (string, error) {
 		return "", fmt.Errorf("read generated pub key: %w", err)
 	}
 	fmt.Printf("Generated SSH key pair at %s\n", privPath)
-	return string(data), nil
+	return strings.TrimRight(string(data), "\n"), nil
 }
 
 // buildSeedISO creates a cloud-init seed ISO from the files in seedDir.
 func buildSeedISO(seedDir, destISO string) error {
-	// Prefer cloud-localds (cloud-image-utils package).
 	if path, err := exec.LookPath("cloud-localds"); err == nil {
 		cmd := exec.Command(path, destISO,
 			filepath.Join(seedDir, "user-data"),
@@ -136,7 +151,6 @@ func buildSeedISO(seedDir, destISO string) error {
 		return cmd.Run()
 	}
 
-	// Fall back to genisoimage / mkisofs.
 	for _, tool := range []string{"genisoimage", "mkisofs"} {
 		if path, err := exec.LookPath(tool); err == nil {
 			cmd := exec.Command(path,
@@ -152,7 +166,8 @@ func buildSeedISO(seedDir, destISO string) error {
 	}
 
 	return fmt.Errorf(
-		"no ISO builder found; install cloud-image-utils (cloud-localds) " +
-			"or genisoimage:\n  apt install cloud-image-utils\n  brew install cloud-utils",
+		"no ISO builder found; install cloud-image-utils (cloud-localds) or genisoimage:\n" +
+			"  apt install cloud-image-utils\n" +
+			"  brew install cloud-utils",
 	)
 }

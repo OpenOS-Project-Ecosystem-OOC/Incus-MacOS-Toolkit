@@ -15,13 +15,14 @@ var (
 	flagDataDir  string
 	flagBackend  string
 	flagListenIP string
+	flagDistro   string
 )
 
 // Execute parses global flags then dispatches to the appropriate subcommand.
 func Execute() {
 	// Define global flags on the default FlagSet.
 	flag.UintVar(&flagVMMemMiB, "vm-mem", 512,
-		"RAM allocated to the Alpine VM in MiB (use >=2048 for LUKS)")
+		"RAM allocated to the VM in MiB (use >=2048 for LUKS)")
 	flag.BoolVar(&flagDebug, "debug", false,
 		"Enable verbose VM and QEMU output")
 	flag.StringVar(&flagDataDir, "data-dir", "",
@@ -30,6 +31,8 @@ func Execute() {
 		"File share backend: smb, afp, nfs, ftp (auto-detected by OS if empty)")
 	flag.StringVar(&flagListenIP, "listen-ip", "127.0.0.1",
 		"IP address the share server listens on")
+	flag.StringVar(&flagDistro, "distro", "alpine",
+		"Linux distro for the microVM: alpine (default), debian, ubuntu, fedora")
 
 	flag.Usage = usage
 
@@ -71,6 +74,8 @@ func Execute() {
 		runList(rest)
 	case "shell":
 		runShell(rest)
+	case "bdfs":
+		runBdfs(rest)
 	case "version":
 		runVersion()
 	case "-h", "--help", "help":
@@ -92,7 +97,8 @@ Subcommands:
   mount     Mount a Linux filesystem and expose it as a network share
   unmount   Unmount a previously mounted filesystem
   list      List currently mounted filesystems
-  shell     Open a shell inside the Alpine VM for a device
+  shell     Open a shell inside the VM for a device
+  bdfs      Proxy btrfs-dwarfs-framework CLI commands into the VM
   version   Print version information
 
 Global flags:

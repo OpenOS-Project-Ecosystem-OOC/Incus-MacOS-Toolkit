@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Alpine Linux VM image management.
-// Downloads and caches a minimal Alpine qcow2 image on first use,
-// then injects an SSH authorized key via a cloud-init seed ISO.
+// image.go — VM image download and caching.
+//
+// Images are stored in the OS cache directory under "linuxfs/<provider-name>/".
+// The provider supplies the URL and optional SHA-256 checksum; this file
+// handles the HTTP download, progress reporting, and atomic rename.
 
 package vm
 
@@ -14,44 +16,25 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
-const alpineVersion = "3.19.1"
-
-// alpineArch returns the Alpine CPU architecture string for the current host.
-func alpineArch() string {
-	if runtime.GOARCH == "arm64" {
-		return "aarch64"
-	}
-	return "x86_64"
-}
-
-// alpineImageURL returns the download URL for the Alpine virtual disk image.
-func alpineImageURL() string {
-	return fmt.Sprintf(
-		"https://dl-cdn.alpinelinux.org/alpine/v%s/releases/cloud/alpine-virt-%s-%s.qcow2",
-		alpineVersion[:4], alpineVersion, alpineArch(),
-	)
-}
-
-// cacheDir returns the OS-appropriate cache directory for linuxfs-mac.
+// cacheDir returns the OS-appropriate cache directory for linuxfs.
 func cacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("user cache dir: %w", err)
 	}
-	dir := filepath.Join(base, "linuxfs-mac")
+	dir := filepath.Join(base, "linuxfs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
 	return dir, nil
 }
 
-// ensureAlpineImage returns the path to a cached Alpine qcow2 image,
-// downloading it if not present.
-func ensureAlpineImage(cfg Config) (string, error) {
-	dir := cfg.DataDir
+// ensureImage returns the path to a cached VM image for the given provider
+// and host architecture, downloading it if not present.
+func ensureImage(p Provider, arch Arch, dataDir string) (string, error) {
+	dir := dataDir
 	if dir == "" {
 		var err error
 		dir, err = cacheDir()
@@ -60,27 +43,34 @@ func ensureAlpineImage(cfg Config) (string, error) {
 		}
 	}
 
-	imageName := fmt.Sprintf("alpine-virt-%s-%s.qcow2", alpineVersion, alpineArch())
-	imagePath := filepath.Join(dir, imageName)
+	// Store each provider's image in its own subdirectory.
+	providerDir := filepath.Join(dir, p.Name())
+	if err := os.MkdirAll(providerDir, 0o700); err != nil {
+		return "", fmt.Errorf("create provider dir: %w", err)
+	}
+
+	url := p.ImageURL(arch)
+	imageName := filepath.Base(url)
+	imagePath := filepath.Join(providerDir, imageName)
 
 	if _, err := os.Stat(imagePath); err == nil {
 		return imagePath, nil // already cached
 	}
 
-	url := alpineImageURL()
-	fmt.Printf("Downloading Alpine Linux VM image (%s) ...\n", alpineVersion)
+	fmt.Printf("Downloading %s VM image (%s) ...\n", p.Name(), arch)
 	fmt.Printf("  %s\n", url)
 
-	if err := downloadFile(url, imagePath); err != nil {
-		return "", fmt.Errorf("download alpine image: %w", err)
+	if err := downloadFile(url, imagePath, p.ImageSHA256(arch)); err != nil {
+		return "", fmt.Errorf("download %s image: %w", p.Name(), err)
 	}
 
 	fmt.Printf("  Saved to %s\n", imagePath)
 	return imagePath, nil
 }
 
-// downloadFile downloads url to dest, printing a progress indicator.
-func downloadFile(url, dest string) error {
+// downloadFile downloads url to dest atomically, printing progress.
+// If wantSHA256 is non-empty the download is verified against it.
+func downloadFile(url, dest, wantSHA256 string) error {
 	tmp := dest + ".tmp"
 
 	resp, err := http.Get(url) //nolint:gosec,noctx
@@ -97,9 +87,11 @@ func downloadFile(url, dest string) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", tmp, err)
 	}
+
+	var writeErr error
 	defer func() {
 		f.Close()
-		if err != nil {
+		if writeErr != nil {
 			os.Remove(tmp)
 		}
 	}()
@@ -112,24 +104,23 @@ func downloadFile(url, dest string) error {
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			if _, writeErr := f.Write(buf[:n]); writeErr != nil {
-				err = fmt.Errorf("write: %w", writeErr)
-				return err
+			if _, e := f.Write(buf[:n]); e != nil {
+				writeErr = fmt.Errorf("write: %w", e)
+				return writeErr
 			}
 			hash.Write(buf[:n])
 			downloaded += int64(n)
 			if total > 0 {
-				pct := downloaded * 100 / total
 				fmt.Printf("\r  %3d%%  %d / %d MiB",
-					pct, downloaded>>20, total>>20)
+					downloaded*100/total, downloaded>>20, total>>20)
 			}
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			err = fmt.Errorf("read: %w", readErr)
-			return err
+			writeErr = fmt.Errorf("read: %w", readErr)
+			return writeErr
 		}
 	}
 	fmt.Println()
@@ -138,10 +129,16 @@ func downloadFile(url, dest string) error {
 		return fmt.Errorf("close: %w", err)
 	}
 
+	gotSHA256 := hex.EncodeToString(hash.Sum(nil))
+	fmt.Printf("  SHA-256: %s\n", gotSHA256)
+
+	if wantSHA256 != "" && gotSHA256 != wantSHA256 {
+		os.Remove(tmp)
+		return fmt.Errorf("SHA-256 mismatch: got %s, want %s", gotSHA256, wantSHA256)
+	}
+
 	if err = os.Rename(tmp, dest); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
-
-	fmt.Printf("  SHA-256: %s\n", hex.EncodeToString(hash.Sum(nil)))
 	return nil
 }

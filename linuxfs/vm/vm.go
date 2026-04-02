@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// vm package manages the lifecycle of the Alpine Linux microVM used to mount
-// Linux filesystems. It wraps QEMU (cross-platform) and optionally libkrun
-// (Apple Silicon) as hypervisor backends.
-//
-// Derived from AlexSSD7/linsk (vm/vm.go) and nohajc/anylinuxfs.
+// vm package manages the lifecycle of the Linux microVM used to mount
+// Linux filesystems. It wraps QEMU as the hypervisor backend and supports
+// any cloud-init-compatible Linux distro via the Provider interface.
 
 package vm
 
@@ -15,25 +13,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"runtime"
 	"time"
-)
-
-// Backend selects the hypervisor used to run the Alpine VM.
-type Backend int
-
-const (
-	// BackendQEMU uses qemu-system-x86_64 / qemu-system-aarch64.
-	// Works on Linux (KVM), macOS (HVF), and Windows (WHPX/TCG).
-	BackendQEMU Backend = iota
-
-	// BackendLibkrun uses libkrun (Apple Silicon only).
-	// Lower overhead than QEMU; used by anylinuxfs on M-series Macs.
-	BackendLibkrun
 )
 
 // Config holds parameters for a single VM instance.
 type Config struct {
+	// Provider selects the Linux distro. Defaults to AlpineProvider if nil.
+	Provider Provider
+
 	// MemMiB is the RAM allocated to the VM in MiB.
 	MemMiB uint32
 
@@ -43,27 +30,26 @@ type Config struct {
 	// ReadOnly mounts the device read-only inside the VM.
 	ReadOnly bool
 
-	// Debug enables verbose QEMU/VM output.
+	// Debug enables verbose QEMU output.
 	Debug bool
 
 	// SSHPort is the host port forwarded to the VM's SSH daemon.
-	// 0 = auto-select a free port.
+	// 0 = use 10022.
 	SSHPort uint16
-
-	// Backend selects the hypervisor.
-	Backend Backend
 
 	// DataDir overrides the default cache directory for VM images.
 	DataDir string
 }
 
-// VM represents a running Alpine Linux microVM instance.
+// VM represents a running Linux microVM instance.
 type VM struct {
-	cfg    Config
-	logger *slog.Logger
-	cmd    *exec.Cmd
-	ctx    context.Context
-	cancel context.CancelFunc
+	cfg      Config
+	provider Provider
+	arch     Arch
+	logger   *slog.Logger
+	cmd      *exec.Cmd
+	ctx      context.Context
+	cancel   context.CancelFunc
 
 	// SSHPort is the resolved host port (set after Start).
 	SSHPort uint16
@@ -74,31 +60,27 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*VM, error) {
 	if cfg.MemMiB == 0 {
 		cfg.MemMiB = 512
 	}
-	if cfg.Backend == BackendLibkrun && runtime.GOOS != "darwin" {
-		return nil, fmt.Errorf("libkrun backend is only supported on macOS")
+	p := cfg.Provider
+	if p == nil {
+		p = AlpineProvider{}
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	return &VM{
-		cfg:    cfg,
-		logger: logger,
-		ctx:    ctx,
-		cancel: cancel,
+		cfg:      cfg,
+		provider: p,
+		arch:     HostArch(),
+		logger:   logger,
+		ctx:      ctx,
+		cancel:   cancel,
 	}, nil
 }
 
-// Start launches the Alpine VM and waits for SSH to become available.
+// Start launches the VM and waits for SSH to become available.
 func (v *VM) Start() error {
-	switch v.cfg.Backend {
-	case BackendQEMU:
-		return v.startQEMU()
-	case BackendLibkrun:
-		return v.startLibkrun()
-	default:
-		return fmt.Errorf("unknown backend: %d", v.cfg.Backend)
-	}
+	return v.startQEMU()
 }
 
-// Stop shuts down the VM gracefully.
+// Stop shuts down the VM.
 func (v *VM) Stop() error {
 	v.cancel()
 	if v.cmd != nil && v.cmd.Process != nil {
@@ -107,41 +89,23 @@ func (v *VM) Stop() error {
 	return nil
 }
 
-// accelFlag returns the correct QEMU acceleration flag for the current OS.
-// Linux uses KVM, macOS uses Apple's Hypervisor.framework (HVF),
-// Windows uses WHPX (falls back to TCG if unavailable).
-func accelFlag() string {
-	switch runtime.GOOS {
-	case "linux":
-		if _, err := os.Stat("/dev/kvm"); err == nil {
-			return "kvm"
-		}
-		return "tcg"
-	case "darwin":
-		return "hvf"
-	case "windows":
-		return "whpx"
-	default:
-		return "tcg"
-	}
+// User returns the SSH username for the running VM's distro.
+func (v *VM) User() string {
+	return v.provider.DefaultUser()
 }
 
 func (v *VM) startQEMU() error {
-	binary := "qemu-system-x86_64"
-	if runtime.GOARCH == "arm64" {
-		binary = "qemu-system-aarch64"
-	}
+	binary := v.arch.QEMUBinary()
 
 	if _, err := exec.LookPath(binary); err != nil {
 		return fmt.Errorf("%s not found: install QEMU first", binary)
 	}
 
-	alpineImage, err := ensureAlpineImage(v.cfg)
+	vmImage, err := ensureImage(v.provider, v.arch, v.cfg.DataDir)
 	if err != nil {
-		return fmt.Errorf("alpine image: %w", err)
+		return fmt.Errorf("vm image: %w", err)
 	}
 
-	// Ensure cloud-init seed ISO exists (injects SSH key + user into Alpine).
 	cacheD := v.cfg.DataDir
 	if cacheD == "" {
 		cacheD, err = cacheDir()
@@ -149,7 +113,9 @@ func (v *VM) startQEMU() error {
 			return fmt.Errorf("cache dir: %w", err)
 		}
 	}
-	seedISO, err := EnsureCloudInitSeed(cacheD)
+
+	// Seed ISO is keyed per-provider so each distro gets its own user-data.
+	seedISO, err := EnsureCloudInitSeed(cacheD, v.provider)
 	if err != nil {
 		return fmt.Errorf("cloud-init seed: %w", err)
 	}
@@ -161,15 +127,16 @@ func (v *VM) startQEMU() error {
 	v.SSHPort = sshPort
 
 	accel := accelFlag()
+	format := v.provider.ImageFormat()
 
 	args := []string{
 		"-accel", accel,
 		"-m", fmt.Sprintf("%d", v.cfg.MemMiB),
 		"-nographic",
 		"-serial", "mon:stdio",
-		// Alpine root disk
-		"-drive", fmt.Sprintf("if=virtio,format=qcow2,file=%s", alpineImage),
-		// cloud-init seed ISO (provides SSH key + user on first boot)
+		// VM root disk
+		"-drive", fmt.Sprintf("if=virtio,format=%s,file=%s", format, vmImage),
+		// cloud-init seed ISO
 		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=on", seedISO),
 		// Target block device / image to mount
 		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=%s",
@@ -178,7 +145,9 @@ func (v *VM) startQEMU() error {
 		"-device", "virtio-net-pci,netdev=net0",
 	}
 
-	v.logger.Info("Starting QEMU Alpine VM",
+	v.logger.Info("Starting VM",
+		"distro", v.provider.Name(),
+		"arch", v.arch,
 		"binary", binary,
 		"accel", accel,
 		"mem_mib", v.cfg.MemMiB,
@@ -195,43 +164,29 @@ func (v *VM) startQEMU() error {
 		return fmt.Errorf("qemu start: %w", err)
 	}
 
-	// Wait for SSH to become available (up to 120 seconds).
 	return v.waitForSSH(120 * time.Second)
 }
 
-// waitForSSH polls the SSH port until it accepts connections or the timeout expires.
+// waitForSSH polls the SSH port until it accepts connections or timeout expires.
 func (v *VM) waitForSSH(timeout time.Duration) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", v.SSHPort)
 	deadline := time.Now().Add(timeout)
 
-	v.logger.Info("Waiting for Alpine VM SSH", "addr", addr, "timeout", timeout)
+	v.logger.Info("Waiting for VM SSH", "addr", addr, "timeout", timeout)
 
 	for time.Now().Before(deadline) {
-		// Check if the QEMU process died unexpectedly.
 		if v.cmd.ProcessState != nil && v.cmd.ProcessState.Exited() {
 			return fmt.Errorf("QEMU process exited unexpectedly")
 		}
-
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
 			conn.Close()
-			v.logger.Info("Alpine VM SSH ready", "addr", addr)
+			v.logger.Info("VM SSH ready", "addr", addr)
 			return nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("timed out waiting for Alpine VM SSH on %s after %s", addr, timeout)
-}
-
-func (v *VM) startLibkrun() error {
-	// libkrun provides a lighter-weight hypervisor using Apple's Hypervisor.framework.
-	// It requires CGo bindings to libkrun.dylib — see docs/libkrun.md.
-	// Use QEMU backend (with -accel hvf) as a fully functional alternative on macOS.
-	return fmt.Errorf(
-		"libkrun backend requires CGo bindings not yet compiled.\n" +
-			"Use the default QEMU backend instead (works on Apple Silicon via -accel hvf).\n" +
-			"See docs/libkrun.md for build instructions.",
-	)
+	return fmt.Errorf("timed out waiting for VM SSH on %s after %s", addr, timeout)
 }
 
 func boolToOnOff(b bool) string {

@@ -30,7 +30,7 @@ func runMount(args []string) {
 		fmt.Fprintf(os.Stderr, `Usage: linuxfs-mac mount [flags] <device>
 
 Mount a block device or disk image containing a Linux filesystem.
-The device is passed through to an Alpine Linux VM which mounts it natively.
+The device is passed through to a Linux microVM which mounts it natively.
 The mounted filesystem is then exposed to the host via a network share.
 
 Examples:
@@ -97,7 +97,14 @@ Flags:
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
 
+	provider, err := vm.ProviderByName(flagDistro)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		os.Exit(1)
+	}
+
 	vmCfg := vm.Config{
+		Provider:   provider,
 		MemMiB:     uint32(flagVMMemMiB), //nolint:gosec
 		DevicePath: device,
 		ReadOnly:   *readOnly,
@@ -111,13 +118,13 @@ Flags:
 		os.Exit(1)
 	}
 
-	fmt.Println("Starting Alpine VM ...")
+	fmt.Printf("Starting %s VM ...\n", provider.Name())
 	if err := v.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR starting VM: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
-		fmt.Println("Stopping Alpine VM ...")
+		fmt.Printf("Stopping %s VM ...\n", provider.Name())
 		_ = v.Stop()
 	}()
 

@@ -26,7 +26,14 @@ func runShell(args []string) {
 	device := fs.Arg(0)
 	logger := slog.Default()
 
+	provider, err := vm.ProviderByName(flagDistro)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		os.Exit(1)
+	}
+
 	vmCfg := vm.Config{
+		Provider:   provider,
 		MemMiB:     uint32(flagVMMemMiB), //nolint:gosec
 		DevicePath: device,
 		Debug:      flagDebug,
@@ -39,7 +46,7 @@ func runShell(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Starting Alpine VM for %s ...\n", device)
+	fmt.Printf("Starting %s VM for %s ...\n", provider.Name(), device)
 	if err := v.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR starting VM: %v\n", err)
 		os.Exit(1)
@@ -51,7 +58,7 @@ func runShell(args []string) {
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-p", fmt.Sprintf("%d", v.SSHPort),
-		fmt.Sprintf("%s@127.0.0.1", vm.VMUser),
+		fmt.Sprintf("%s@127.0.0.1", v.User()),
 	}
 	fmt.Printf("Connecting: ssh %v\n", sshArgs)
 

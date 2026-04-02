@@ -13,7 +13,10 @@
 #   fmt              Format C sources with clang-format
 #
 # Variables:
-#   KDIR             Kernel source tree (default: running kernel)
+#   KDIR             Kernel source tree (default: running kernel headers).
+#                    Set to ../btrfs-devel to build against the in-tree
+#                    kdave/btrfs-devel source included in this repository:
+#                      make kernel KDIR=../btrfs-devel
 #   PREFIX           Install prefix for userspace (default: /usr/local)
 #   BUILD_DIR        CMake build directory (default: build/userspace)
 
@@ -21,7 +24,10 @@ KDIR      ?= /lib/modules/$(shell uname -r)/build
 PREFIX    ?= /usr/local
 BUILD_DIR ?= build/userspace
 
-.PHONY: all kernel userspace install install-kernel install-userspace \
+# Convenience alias: `make kernel-devel` builds against the bundled btrfs-devel tree.
+BTRFS_DEVEL_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))../btrfs-devel
+
+.PHONY: all kernel kernel-devel userspace install install-kernel install-userspace \
         clean clean-kernel clean-userspace test check fmt
 
 all: kernel userspace
@@ -30,6 +36,11 @@ all: kernel userspace
 
 kernel:
 	$(MAKE) -C kernel KDIR=$(KDIR)
+
+# Build the kernel module against the bundled kdave/btrfs-devel source tree.
+# Requires a full kernel build tree at ../btrfs-devel (run `make -C ../btrfs-devel` first).
+kernel-devel:
+	$(MAKE) -C kernel KDIR=$(BTRFS_DEVEL_DIR)
 
 clean-kernel:
 	$(MAKE) -C kernel clean
