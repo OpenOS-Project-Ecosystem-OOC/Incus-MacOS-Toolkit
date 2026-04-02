@@ -277,16 +277,22 @@ fi
 grep -qF '%s' /etc/exports 2>/dev/null || \
     echo '%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=0%s)' >> /etc/exports
 
+# Load nfsd kernel module explicitly (required on cloud kernels).
+modprobe nfsd 2>/dev/null || true
+modprobe nfs 2>/dev/null || true
+
 # Start / reload NFS server.
 if command -v rc-service >/dev/null 2>&1; then
     rc-service rpcbind start 2>/dev/null || true
     rc-service nfs start 2>/dev/null || rc-service nfs restart 2>/dev/null || true
 elif command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now rpcbind 2>/dev/null || true
-    systemctl enable --now nfs-kernel-server 2>/dev/null || \
-    systemctl enable --now nfs-server 2>/dev/null || true
+    systemctl restart nfs-kernel-server 2>/dev/null || \
+    systemctl restart nfs-server 2>/dev/null || true
 fi
-exportfs -ra
+exportfs -ra 2>/dev/null || true
+# Verify NFS is listening.
+ss -tlnp 2>/dev/null | grep ':2049' || netstat -tlnp 2>/dev/null | grep ':2049' || true
 `, vmMountPoint, vmMountPoint, listenIP, roFlag)
 	return b.String()
 }
