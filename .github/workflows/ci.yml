@@ -303,6 +303,12 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           sudo usermod -aG kvm "$USER" || true
+      - name: Smoke-test QEMU launch
+        # Run QEMU directly to confirm it starts and prints version output.
+        run: |
+          qemu-system-x86_64 --version
+          echo "KVM available: $(test -e /dev/kvm && echo yes || echo no)"
+          ls -la /dev/kvm 2>/dev/null || true
       - name: Run integration test (as root for NFS mount)
         working-directory: linuxfs
         # sudo -E preserves the Go environment set up by setup-go.

@@ -191,8 +191,10 @@ func (v *VM) startQEMU() error {
 		v.cmd.Stdout = os.Stdout
 		v.cmd.Stderr = os.Stderr
 	} else {
-		// Capture stderr so early-exit errors are surfaced in the error message.
+		// Capture both stdout and stderr: QEMU writes errors to stdout
+		// when -nographic is active, and to stderr otherwise.
 		v.qemuStderr.Reset()
+		v.cmd.Stdout = &v.qemuStderr
 		v.cmd.Stderr = &v.qemuStderr
 	}
 	if err := v.cmd.Start(); err != nil {
