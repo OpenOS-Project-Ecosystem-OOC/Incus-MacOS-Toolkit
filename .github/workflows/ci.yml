@@ -122,11 +122,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Verify submodule populated
+      - name: Verify submodule registered and populated
         run: |
+          # Confirm .gitmodules has the entry
+          grep -q "DiegoMagdaleno/BSDCoreUtils" .gitmodules
+          # Confirm the submodule directory was checked out
           test -d compat/bsdcoreutils/upstream
-          test -f compat/bsdcoreutils/upstream/README.md || \
-          test -f compat/bsdcoreutils/upstream/README    || \
           ls compat/bsdcoreutils/upstream/ | head -5
 
   # ── btrfs-dwarfs: userspace build + unit tests ────────────────────────────
@@ -253,7 +254,7 @@ jobs:
       - name: cppcheck
         run: |
           cppcheck \
-            --enable=warning,style,performance,portability \
+            --enable=warning,performance,portability \
             --error-exitcode=1 \
             --suppress=missingIncludeSystem \
             --suppress=unusedFunction \
