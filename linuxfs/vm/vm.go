@@ -258,20 +258,23 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		addr, timeout, v.qemuStderr.String())
 }
 
-// waitForCloudInit polls until cloud-init has finished and sudo is usable,
-// so that the VM user and NOPASSWD:ALL configuration are in place before
-// we run scripts inside the VM.
+// waitForCloudInit waits for cloud-init to fully complete all modules,
+// including package installation, so that the VM is fully configured
+// before we run setup scripts inside it.
 func (v *VM) waitForCloudInit(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
-	for time.Now().Before(deadline) {
-		if _, err := v.Run("sudo true"); err == nil {
-			v.logger.Info("cloud-init ready")
-			return nil
-		}
-		time.Sleep(3 * time.Second)
+	// cloud-init status --wait blocks until all stages finish.
+	// Fall back to polling sudo if cloud-init is not available.
+	if _, err := v.Run(fmt.Sprintf(
+		"sudo cloud-init status --wait --timeout %d 2>/dev/null || "+
+			"(for i in $(seq 1 %d); do sudo true 2>/dev/null && exit 0; sleep 3; done; exit 1)",
+		int(timeout.Seconds()),
+		int(timeout.Seconds()/3),
+	)); err != nil {
+		return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
 	}
-	return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
+	v.logger.Info("cloud-init ready")
+	return nil
 }
 
 // waitForSSHBanner connects to addr and reads the SSH protocol banner line.
