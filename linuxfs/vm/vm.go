@@ -179,6 +179,7 @@ func (v *VM) startQEMU() error {
 		"mem_mib", v.cfg.MemMiB,
 		"device", v.cfg.DevicePath,
 		"ssh_port", sshPort,
+		"args", args,
 	)
 
 	v.cmd = exec.CommandContext(v.ctx, binary, args...)
@@ -215,10 +216,11 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 
 	v.logger.Info("Waiting for VM SSH", "addr", addr, "timeout", timeout)
 
-	// Give QEMU a moment to fail fast (e.g. missing file, bad args).
-	time.Sleep(500 * time.Millisecond)
+	// Give QEMU a moment to fail fast (e.g. missing file, bad args)
+	// and for the Wait goroutine to populate ProcessState and flush output.
+	time.Sleep(2 * time.Second)
 	if v.cmd.ProcessState != nil && v.cmd.ProcessState.Exited() {
-		return fmt.Errorf("QEMU process exited immediately (exit code %d)\n%s",
+		return fmt.Errorf("QEMU process exited immediately (exit code %d)\nOutput:\n%s",
 			v.cmd.ProcessState.ExitCode(), v.qemuStderr.String())
 	}
 
