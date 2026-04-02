@@ -7,6 +7,7 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -48,13 +49,14 @@ type Config struct {
 
 // VM represents a running Linux microVM instance.
 type VM struct {
-	cfg      Config
-	provider Provider
-	arch     Arch
-	logger   *slog.Logger
-	cmd      *exec.Cmd
-	ctx      context.Context
-	cancel   context.CancelFunc
+	cfg        Config
+	provider   Provider
+	arch       Arch
+	logger     *slog.Logger
+	cmd        *exec.Cmd
+	ctx        context.Context
+	cancel     context.CancelFunc
+	qemuStderr bytes.Buffer // captures QEMU stderr when Debug is false
 
 	// SSHPort is the resolved host port (set after Start).
 	SSHPort uint16
@@ -183,10 +185,18 @@ func (v *VM) startQEMU() error {
 	if v.cfg.Debug {
 		v.cmd.Stdout = os.Stdout
 		v.cmd.Stderr = os.Stderr
+	} else {
+		// Capture stderr so early-exit errors are surfaced in the error message.
+		v.qemuStderr.Reset()
+		v.cmd.Stderr = &v.qemuStderr
 	}
 	if err := v.cmd.Start(); err != nil {
 		return fmt.Errorf("qemu start: %w", err)
 	}
+
+	// Reap the process in the background so ProcessState is populated
+	// promptly when QEMU exits, allowing waitForSSH to detect early exits.
+	go func() { _ = v.cmd.Wait() }()
 
 	return v.waitForSSH(300 * time.Second)
 }
@@ -198,9 +208,17 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 
 	v.logger.Info("Waiting for VM SSH", "addr", addr, "timeout", timeout)
 
+	// Give QEMU a moment to fail fast (e.g. missing file, bad args).
+	time.Sleep(500 * time.Millisecond)
+	if v.cmd.ProcessState != nil && v.cmd.ProcessState.Exited() {
+		return fmt.Errorf("QEMU process exited immediately (exit code %d)\n%s",
+			v.cmd.ProcessState.ExitCode(), v.qemuStderr.String())
+	}
+
 	for time.Now().Before(deadline) {
 		if v.cmd.ProcessState != nil && v.cmd.ProcessState.Exited() {
-			return fmt.Errorf("QEMU process exited unexpectedly")
+			return fmt.Errorf("QEMU process exited unexpectedly (exit code %d)\n%s",
+				v.cmd.ProcessState.ExitCode(), v.qemuStderr.String())
 		}
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
@@ -210,7 +228,8 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("timed out waiting for VM SSH on %s after %s", addr, timeout)
+	return fmt.Errorf("timed out waiting for VM SSH on %s after %s\nQEMU stderr: %s",
+		addr, timeout, v.qemuStderr.String())
 }
 
 // buildNetdev constructs the QEMU -netdev user argument string, including
