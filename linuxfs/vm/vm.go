@@ -205,7 +205,10 @@ func (v *VM) startQEMU() error {
 	// promptly when QEMU exits, allowing waitForSSH to detect early exits.
 	go func() { _ = v.cmd.Wait() }()
 
-	return v.waitForSSH(300 * time.Second)
+	if err := v.waitForSSH(300 * time.Second); err != nil {
+		return err
+	}
+	return v.waitForCloudInit(120 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.
@@ -243,6 +246,23 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 	}
 	return fmt.Errorf("timed out waiting for VM SSH on %s after %s\nQEMU stderr: %s",
 		addr, timeout, v.qemuStderr.String())
+}
+
+// waitForCloudInit polls until cloud-init has finished (or sudo is available),
+// so that the VM user and sudo configuration are in place before we run scripts.
+func (v *VM) waitForCloudInit(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
+	for time.Now().Before(deadline) {
+		// Try running a trivial sudo command. Once cloud-init has created
+		// the user with NOPASSWD:ALL, this succeeds.
+		if _, err := v.Run("sudo true"); err == nil {
+			v.logger.Info("cloud-init ready")
+			return nil
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
 }
 
 // waitForSSHBanner connects to addr and reads the SSH protocol banner line.
