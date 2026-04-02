@@ -101,7 +101,7 @@ func TestVMBootMountNFS(t *testing.T) {
 	}
 
 	v, err := vm.New(ctx, vm.Config{
-		Provider:      vm.AlpineProvider{},
+		Provider:      vm.DebianProvider{},
 		MemMiB:        testMemMiB,
 		DevicePath:    imgPath,
 		SSHPort:       uint16(testSSHPort),

@@ -205,10 +205,10 @@ func (v *VM) startQEMU() error {
 	// promptly when QEMU exits, allowing waitForSSH to detect early exits.
 	go func() { _ = v.cmd.Wait() }()
 
-	if err := v.waitForSSH(300 * time.Second); err != nil {
+	if err := v.waitForSSH(240 * time.Second); err != nil {
 		return err
 	}
-	return v.waitForCloudInit(120 * time.Second)
+	return v.waitForCloudInit(180 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.
@@ -248,21 +248,16 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		addr, timeout, v.qemuStderr.String())
 }
 
-// waitForCloudInit polls until cloud-init has finished (or sudo is available),
-// so that the VM user and sudo configuration are in place before we run scripts.
+// waitForCloudInit polls until cloud-init has finished and sudo is usable,
+// so that the VM user and NOPASSWD:ALL configuration are in place before
+// we run scripts inside the VM.
 func (v *VM) waitForCloudInit(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
 	for time.Now().Before(deadline) {
-		// Log what user we are and whether sudo exists, for diagnosis.
-		if out, err := v.Run("id && command -v sudo || echo 'no sudo'"); err == nil {
-			v.logger.Info("cloud-init probe", "out", out)
-			// Try running a trivial sudo command. Once cloud-init has created
-			// the user with NOPASSWD:ALL, this succeeds.
-			if _, err2 := v.Run("sudo true"); err2 == nil {
-				v.logger.Info("cloud-init ready")
-				return nil
-			}
+		if _, err := v.Run("sudo true"); err == nil {
+			v.logger.Info("cloud-init ready")
+			return nil
 		}
 		time.Sleep(3 * time.Second)
 	}
