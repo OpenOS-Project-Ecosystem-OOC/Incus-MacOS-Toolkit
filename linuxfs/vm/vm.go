@@ -267,13 +267,11 @@ func (v *VM) waitForCloudInit(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
 	for time.Now().Before(deadline) {
-		// Poll for the custom sentinel written by the last runcmd entry.
-		// Falls back to checking cloud-init's own result file.
+		// Only check for the custom sentinel written by the last runcmd entry.
+		// This file is created after all runcmd commands complete, including
+		// package installation.
 		out, err := v.Run(
-			"test -f /var/lib/cloud/instance/boot-finished-custom && echo done" +
-				" || (cloud-init status 2>/dev/null | grep -q 'done' && " +
-				"test -f /var/lib/cloud/instance/boot-finished && echo done)" +
-				" || echo waiting",
+			"test -f /var/lib/cloud/instance/boot-finished-custom && echo done || echo waiting",
 		)
 		if err == nil && strings.Contains(out, "done") {
 			v.logger.Info("cloud-init ready")
