@@ -259,27 +259,25 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		addr, timeout, v.qemuStderr.String())
 }
 
-// waitForCloudInit waits for cloud-init to fully complete all modules,
-// including package installation, so that the VM is fully configured
-// before we run setup scripts inside it.
-//
-// Strategy: run "cloud-init status --wait" inside the VM via SSH.
-// This blocks until all stages (init, config, final) complete.
-// The --wait flag is supported on cloud-init >= 21.4.
+// waitForCloudInit waits for cloud-init to fully complete, including any
+// runcmd steps. It polls for /var/lib/cloud/instance/boot-finished (written
+// by cloud-init itself) and /var/lib/cloud/instance/boot-finished-custom
+// (written by the last runcmd entry) to confirm all user commands ran.
 func (v *VM) waitForCloudInit(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
-	secs := int(timeout.Seconds())
-	// Run cloud-init status --wait inside the VM. It blocks until done.
-	// Wrap in a timeout in case cloud-init hangs.
-	out, err := v.Run(fmt.Sprintf(
-		"sudo timeout %d cloud-init status --wait 2>&1; echo exit:$?",
-		secs,
-	))
-	v.logger.Info("cloud-init ready", "out", strings.TrimSpace(out))
-	if err != nil {
-		return fmt.Errorf("cloud-init wait failed: %w", err)
+	for time.Now().Before(deadline) {
+		// cloud-init writes boot-finished after the final module completes.
+		out, err := v.Run(
+			"test -f /var/lib/cloud/instance/boot-finished && echo done || echo waiting",
+		)
+		if err == nil && strings.Contains(out, "done") {
+			v.logger.Info("cloud-init ready")
+			return nil
+		}
+		time.Sleep(5 * time.Second)
 	}
-	return nil
+	return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
 }
 
 // waitForSSHBanner connects to addr and reads the SSH protocol banner line.

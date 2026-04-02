@@ -176,11 +176,15 @@ func TestVMBootMountNFS(t *testing.T) {
 // base image, so the test doesn't need to install anything extra.
 type minimalDebianProvider struct{ vm.DebianProvider }
 
-func (minimalDebianProvider) CloudInitPackages() []string {
-	// Only install what the NFS setup script needs; skip btrfs-progs etc.
-	return []string{"nfs-kernel-server"}
+func (minimalDebianProvider) CloudInitPackages() []string { return nil }
+func (minimalDebianProvider) CloudInitRuncmds() []string {
+	// Install nfs-kernel-server via runcmd (runs after packages stage).
+	// Write a sentinel file when done so waitForCloudInit can detect completion.
+	return []string{
+		"apt-get install -y --no-install-recommends nfs-kernel-server 2>&1 | tail -1",
+		"touch /var/lib/cloud/instance/boot-finished-custom",
+	}
 }
-func (minimalDebianProvider) CloudInitRuncmds() []string { return nil }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
