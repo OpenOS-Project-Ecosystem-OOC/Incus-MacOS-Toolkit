@@ -160,13 +160,18 @@ func (v *VM) startQEMU() error {
 		"-nographic",
 		"-serial", serialDev,
 		"-monitor", "none",
-		// VM root disk
-		"-drive", fmt.Sprintf("if=virtio,format=%s,file=%s", format, vmImage),
-		// cloud-init seed ISO
-		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=on", seedISO),
-		// Target block device / image to mount
-		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=%s",
+		// Boot explicitly from the first virtio disk (the VM root image).
+		"-boot", "order=c,strict=on",
+		// VM root disk — bootindex=1 ensures SeaBIOS boots this first.
+		"-drive", fmt.Sprintf("if=none,id=rootdisk,format=%s,file=%s", format, vmImage),
+		"-device", "virtio-blk-pci,drive=rootdisk,bootindex=1",
+		// cloud-init seed ISO — NoCloud datasource reads this on first boot.
+		"-drive", fmt.Sprintf("if=none,id=seeddisk,format=raw,file=%s,readonly=on", seedISO),
+		"-device", "virtio-blk-pci,drive=seeddisk",
+		// Target block device / image to expose inside the VM as /dev/vdc.
+		"-drive", fmt.Sprintf("if=none,id=targetdisk,format=raw,file=%s,readonly=%s",
 			v.cfg.DevicePath, boolToOnOff(v.cfg.ReadOnly)),
+		"-device", "virtio-blk-pci,drive=targetdisk",
 		"-netdev", v.buildNetdev(sshPort),
 		"-device", "virtio-net-pci,netdev=net0",
 	}
