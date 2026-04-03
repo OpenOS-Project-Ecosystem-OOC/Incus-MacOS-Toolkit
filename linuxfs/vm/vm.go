@@ -270,8 +270,10 @@ func (v *VM) waitForCloudInit(timeout time.Duration) error {
 		// Only check for the custom sentinel written by the last runcmd entry.
 		// This file is created after all runcmd commands complete, including
 		// package installation.
+		// /run is a tmpfs cleared on every boot, so this sentinel can only
+		// exist if the current boot's runcmd has completed.
 		out, err := v.Run(
-			"test -f /var/lib/cloud/instance/boot-finished-custom && echo done || echo waiting",
+			"test -f /run/cloud-init-custom-done && echo done || echo waiting",
 		)
 		if err == nil && strings.Contains(out, "done") {
 			v.logger.Info("cloud-init ready")

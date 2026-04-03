@@ -179,10 +179,11 @@ type minimalDebianProvider struct{ vm.DebianProvider }
 func (minimalDebianProvider) CloudInitPackages() []string { return nil }
 func (minimalDebianProvider) CloudInitRuncmds() []string {
 	// Install nfs-kernel-server via runcmd (runs after packages stage).
-	// Write a sentinel file when done so waitForCloudInit can detect completion.
+	// Write sentinel to /run (tmpfs, cleared on reboot) so it can't be
+	// a leftover from a previous boot of the same cached image.
 	return []string{
 		"apt-get install -y --no-install-recommends nfs-kernel-server 2>&1 | tail -1",
-		"touch /var/lib/cloud/instance/boot-finished-custom",
+		"touch /run/cloud-init-custom-done",
 	}
 }
 
