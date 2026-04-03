@@ -34,6 +34,8 @@ func (o SSHOptions) sshArgs() []string {
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
+		"-o", "LogLevel=ERROR",
+		"-T", // no pseudo-terminal; suppresses MOTD/banner output
 		"-p", fmt.Sprintf("%d", o.Port),
 	}
 	if o.KeyPath != "" {
