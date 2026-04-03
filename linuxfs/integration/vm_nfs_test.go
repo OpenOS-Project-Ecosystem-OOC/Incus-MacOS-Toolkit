@@ -51,14 +51,6 @@ const (
 
 	// testSentinel is written inside the ext4 image and verified via NFS.
 	testSentinel = "linuxfs-integration-ok\n"
-
-	// nfsMountRetries is the number of times to retry the NFS mount before
-	// failing. The NFS server inside the VM may take a few seconds to become
-	// fully ready after the ports become reachable.
-	nfsMountRetries = 5
-
-	// nfsMountRetryDelay is the wait between NFS mount retry attempts.
-	nfsMountRetryDelay = 5 * time.Second
 )
 
 // TestVMBootMountNFS:
@@ -147,10 +139,14 @@ func TestVMBootMountNFS(t *testing.T) {
 	}
 	t.Logf("Share URL: %s", shareURL)
 
-	// Log NFS server state for debugging.
-	if out, err := v.Run("sudo exportfs -v 2>&1; echo '---'; sudo ss -tlnp 2>&1 | grep -E ':2049|:20048|:111'; echo '---'; sudo rpcinfo -p 2>&1 || true; echo '---'; cat /etc/exports 2>&1; echo '---'; mount | grep linuxfs 2>&1 || true; echo '---'; sudo journalctl -u nfs-mountd --no-pager -n 20 2>&1 || true"); err == nil {
-		t.Logf("NFS server state:\n%s", out)
-	}
+	// Log NFS server state on failure for diagnosis.
+	t.Cleanup(func() {
+		if t.Failed() {
+			if out, err := v.Run("sudo exportfs -v 2>&1; echo '---'; sudo ss -tlnp 2>&1 | grep -E ':2049|:20048'; echo '---'; sudo journalctl -u nfs-mountd --no-pager -n 30 2>&1 || true"); err == nil {
+				t.Logf("NFS server state:\n%s", out)
+			}
+		}
+	})
 
 	// ── 5. Wait for NFS ports on host ────────────────────────────────────────
 	// Use a longer timeout (60s) to allow the NFS server inside the VM to
@@ -177,30 +173,13 @@ func TestVMBootMountNFS(t *testing.T) {
 
 	// NFS v3 over TCP. Mount the exported path directly — mountd checks the
 	// actual path in /etc/exports, not the fsid=0 alias used by NFSD.
-	// -v gives verbose output on failure for easier debugging.
 	mountArgs := []string{
-		"-v",
 		"-t", "nfs",
 		"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,tcp,nolock,soft,timeo=30", testNFSPort, testMountdPort),
 		"127.0.0.1:/mnt/linuxfs", nfsMnt,
 	}
-
-	// Retry the mount: the NFS server may need a few extra seconds to export
-	// after the ports become reachable (exportfs -ra runs asynchronously).
-	var mountErr error
-	for attempt := 1; attempt <= nfsMountRetries; attempt++ {
-		var out []byte
-		out, mountErr = exec.CommandContext(ctx, "mount", mountArgs...).CombinedOutput()
-		if mountErr == nil {
-			break
-		}
-		t.Logf("mount attempt %d/%d failed: %v\n%s", attempt, nfsMountRetries, mountErr, out)
-		if attempt < nfsMountRetries {
-			time.Sleep(nfsMountRetryDelay)
-		}
-	}
-	if mountErr != nil {
-		t.Fatalf("mount NFS: %v", mountErr)
+	if out, err := exec.CommandContext(ctx, "mount", mountArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("mount NFS: %v\n%s", err, out)
 	}
 
 	got, err := os.ReadFile(filepath.Join(nfsMnt, "sentinel.txt"))
