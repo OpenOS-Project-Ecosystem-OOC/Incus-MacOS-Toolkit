@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Integration test: boot Alpine VM, mount ext4, verify NFS share.
+// Integration test: boot Debian VM, mount ext4, verify NFS share.
 //
 // Requirements (all satisfied on ubuntu-latest GitHub Actions runners):
 //   - qemu-system-x86_64
@@ -34,7 +34,7 @@ import (
 
 const (
 	// testMemMiB is the RAM given to the test VM. 1 GiB speeds up first-boot
-	// cloud-init package installation on the generic_alpine image.
+	// cloud-init package installation on the Debian genericcloud image.
 	testMemMiB = 1024
 
 	// testSSHPort is the host-side SSH port for the test VM.
@@ -56,7 +56,7 @@ const (
 // TestVMBootMountNFS:
 //  1. Creates a small ext4 image on the host.
 //  2. Writes a sentinel file into it via a loop mount.
-//  3. Boots an Alpine VM with the image as the pass-through device.
+//  3. Boots a Debian VM with the image as the pass-through device.
 //  4. Runs the NFS setup script inside the VM.
 //  5. Mounts the NFS share on the host.
 //  6. Verifies the sentinel file is visible.
@@ -91,8 +91,8 @@ func TestVMBootMountNFS(t *testing.T) {
 	}
 	mustRun(t, "umount", mntPath)
 
-	// ── 3. Boot Alpine VM ────────────────────────────────────────────────────
-	t.Log("Booting Alpine VM")
+	// ── 3. Boot Debian VM ────────────────────────────────────────────────────
+	t.Log("Booting Debian VM")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Forward NFS data port and mountd to non-standard host ports to avoid

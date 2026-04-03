@@ -194,10 +194,12 @@ Flags:
 				fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
 			} else {
 				// Detect the Finder mountpoint so unmount can eject it.
-				// macOS mounts AFP/NFS shares under /Volumes/<sharename>.
-				candidate := "/Volumes/" + mount.ShareName()
-				if _, err := os.Stat(candidate); err == nil {
-					*mountPoint = candidate
+				// AFP/SMB → /Volumes/<sharename>; NFS → /Volumes/<host>.
+				candidate := mount.FinderMountPoint(shareURL)
+				if candidate != "" {
+					if _, err := os.Stat(candidate); err == nil {
+						*mountPoint = candidate
+					}
 				}
 			}
 		} else {
@@ -206,12 +208,18 @@ Flags:
 	}
 
 	// ── Persist state for 'list', 'unmount', and 'clean' ─────────────────
+	// Use the effective backend inferred from shareURL so that AFP→NFS
+	// fallback is recorded as NFS rather than AFP.
+	effectiveBackend := mount.BackendFromURL(shareURL)
+	if effectiveBackend == "" {
+		effectiveBackend = backend
+	}
 	records, _ := loadMounts()
 	records = append(records, MountRecord{
 		Device:     device,
 		ShareURL:   shareURL,
 		MountPoint: *mountPoint,
-		Backend:    string(backend),
+		Backend:    string(effectiveBackend),
 		VMPid:      v.Pid(),
 		SSHPort:    v.SSHPort,
 	})

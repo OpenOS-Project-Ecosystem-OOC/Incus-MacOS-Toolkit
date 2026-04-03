@@ -385,7 +385,15 @@ fi
 		roFlag = "yes"
 	}
 	fmt.Fprintf(&b, `
-# Write a minimal smb.conf if the share section is missing.
+# Ensure [global] has 'map to guest = Bad User' so unauthenticated
+# connections are accepted. Without this, 'guest ok = yes' on the share
+# has no effect — Samba still rejects anonymous connections.
+if ! grep -q 'map to guest' /etc/samba/smb.conf 2>/dev/null; then
+    sed -i '/^\[global\]/a\\tmap to guest = Bad User' /etc/samba/smb.conf 2>/dev/null || \
+        printf '[global]\n\tmap to guest = Bad User\n' >> /etc/samba/smb.conf
+fi
+
+# Write the share section if missing.
 if ! grep -qF '[%s]' /etc/samba/smb.conf 2>/dev/null; then
     cat >> /etc/samba/smb.conf <<'SMBEOF'
 [%s]
@@ -464,9 +472,16 @@ cat > /etc/vsftpd.conf <<'FTPEOF'
 anonymous_enable=YES
 local_enable=NO
 write_enable=%s
+anon_upload_enable=%s
+anon_mkdir_write_enable=%s
 anon_root=%s
 listen=YES
 listen_port=%d
+# pasv_address must be 127.0.0.1 so the client connects back through
+# the QEMU hostfwd rules rather than the VM's internal IP (10.0.2.15),
+# which is unreachable from the host.
+pasv_address=127.0.0.1
+pasv_addr_resolve=NO
 pasv_enable=YES
 pasv_min_port=40000
 pasv_max_port=40004
@@ -477,7 +492,7 @@ if command -v rc-service >/dev/null 2>&1; then
 elif command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now vsftpd 2>/dev/null || true
 fi
-`, writeFlag, vmMountPoint, portFTP)
+`, writeFlag, writeFlag, writeFlag, vmMountPoint, portFTP)
 	return b.String()
 }
 

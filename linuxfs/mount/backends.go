@@ -131,7 +131,7 @@ func autoMountDarwin(shareURL, mountPoint string) error {
 	}
 
 	var cmd *exec.Cmd
-	switch backendFromURL(shareURL) {
+	switch BackendFromURL(shareURL) {
 	case BackendAFP:
 		cmd = exec.Command("mount_afp", shareURL, mountPoint)
 	case BackendNFS:
@@ -161,7 +161,7 @@ func autoMountLinux(shareURL, mountPoint string) error {
 	}
 
 	var cmd *exec.Cmd
-	switch backendFromURL(shareURL) {
+	switch BackendFromURL(shareURL) {
 	case BackendNFS:
 		// Force NFSv4 so the client connects directly to port 2049 without
 		// consulting rpcbind (port 111 is not forwarded by QEMU hostfwd).
@@ -215,8 +215,8 @@ func AutoUnmount(mountPoint string) error {
 	return nil
 }
 
-// backendFromURL infers the Backend from a share URL scheme.
-func backendFromURL(url string) Backend {
+// BackendFromURL infers the Backend from a share URL scheme.
+func BackendFromURL(url string) Backend {
 	switch {
 	case len(url) >= 6 && url[:6] == "afp://":
 		return BackendAFP
@@ -229,6 +229,54 @@ func backendFromURL(url string) Backend {
 	default:
 		return ""
 	}
+}
+
+// FinderMountPoint returns the /Volumes/ path macOS uses when Finder mounts
+// a share URL without an explicit mountpoint.
+//
+// AFP/SMB: macOS uses the share name (last path component of the URL).
+//   afp://127.0.0.1/linuxfs → /Volumes/linuxfs
+//   smb://127.0.0.1/linuxfs → /Volumes/linuxfs
+//
+// NFS: macOS uses the host portion of the URL.
+//   nfs://127.0.0.1/        → /Volumes/127.0.0.1
+func FinderMountPoint(shareURL string) string {
+	switch BackendFromURL(shareURL) {
+	case BackendNFS:
+		host, _ := splitNFSURL(shareURL)
+		return "/Volumes/" + host
+	case BackendAFP:
+		// afp://host/sharename — take last path component
+		rest := shareURL[6:]
+		if i := len(rest) - 1; rest[i] == '/' {
+			rest = rest[:i]
+		}
+		if slash := lastSlash(rest); slash >= 0 {
+			return "/Volumes/" + rest[slash+1:]
+		}
+		return "/Volumes/" + rest
+	case BackendSMB:
+		// smb://host/sharename
+		rest := shareURL[6:]
+		if i := len(rest) - 1; rest[i] == '/' {
+			rest = rest[:i]
+		}
+		if slash := lastSlash(rest); slash >= 0 {
+			return "/Volumes/" + rest[slash+1:]
+		}
+		return "/Volumes/" + rest
+	default:
+		return ""
+	}
+}
+
+func lastSlash(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
 }
 
 // splitNFSURL converts nfs://host/path → (host, /path).
