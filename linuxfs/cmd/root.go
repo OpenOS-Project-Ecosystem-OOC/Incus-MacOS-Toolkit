@@ -16,6 +16,7 @@ var (
 	flagBackend  string
 	flagListenIP string
 	flagDistro   string
+	flagSSHPort  uint
 )
 
 // Execute parses global flags then dispatches to the appropriate subcommand.
@@ -33,6 +34,8 @@ func Execute() {
 		"IP address the share server listens on")
 	flag.StringVar(&flagDistro, "distro", "alpine",
 		"Linux distro for the microVM: alpine (default), debian, ubuntu, fedora")
+	flag.UintVar(&flagSSHPort, "ssh-port", 0,
+		"Host port forwarded to the VM's SSH daemon (default: 10022)")
 
 	flag.Usage = usage
 

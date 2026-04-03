@@ -124,10 +124,11 @@ The QEMU binary and VM image are selected automatically based on the host:
 
 | Backend | Default on | Notes |
 |---|---|---|
+| `sshfs` | Linux | No root required; tunnels over the existing SSH port |
 | `afp` | macOS | Auto-mounts under `/Volumes` via `open afp://` |
 | `nfs` | — | macOS alternative; lower overhead than AFP |
 | `smb` | Windows | Auto-mounts via `net use` |
-| `ftp` | Linux/other | Cross-platform fallback |
+| `ftp` | Linux (fallback) | Used when `sshfs` is not installed |
 
 ## Directory layout
 
@@ -135,30 +136,34 @@ The QEMU binary and VM image are selected automatically based on the host:
 linuxfs/
 ├── main.go
 ├── cmd/
-│   ├── root.go       # Global flags (--distro, --vm-mem, --backend, ...)
-│   ├── mount.go      # mount — starts VM, mounts fs, starts share server
-│   ├── unmount.go    # unmount — stops share and VM
-│   ├── list.go       # list — reads mounts.json state file
-│   ├── shell.go      # shell — interactive SSH session into the VM
-│   ├── bdfs.go       # bdfs — proxy for btrfs-dwarfs CLI inside the VM
+│   ├── root.go          # Global flags (--distro, --vm-mem, --backend, --ssh-port, ...)
+│   ├── mount.go         # mount — starts VM, mounts fs, starts share server
+│   ├── list.go          # list — reads mounts.json state file
+│   ├── shell.go         # shell — interactive SSH session into the VM
+│   ├── bdfs.go          # bdfs — proxy for btrfs-dwarfs CLI inside the VM
+│   ├── clean.go         # clean — prune stale entries from mounts.json
+│   ├── update_images.go # update-images — re-download cached VM base images
 │   └── version.go
 ├── vm/
-│   ├── vm.go         # VM lifecycle: Start/Stop, QEMU args, waitForSSH
-│   ├── arch.go       # HostArch(), QEMUBinary(), accelFlag()
-│   ├── provider.go   # Provider interface + ProviderByName()
+│   ├── vm.go            # VM lifecycle: Start/Stop, QEMU args, waitForSSH
+│   ├── arch.go          # HostArch(), QEMUBinary(), accelFlag()
+│   ├── provider.go      # Provider interface + ProviderByName()
 │   ├── provider_alpine.go
 │   ├── provider_debian.go
 │   ├── provider_ubuntu.go
 │   ├── provider_fedora.go
-│   ├── image.go      # Image download, caching, SHA-256 verification
-│   ├── cloudinit.go  # cloud-init seed ISO generation (SSH key injection)
-│   └── ssh.go        # Run, RunScript, WaitForPort, CopyFile helpers
+│   ├── image.go         # Image download, caching, SHA-256 verification
+│   ├── cloudinit.go     # cloud-init seed ISO generation (SSH key injection)
+│   └── ssh.go           # Run, RunScript, WaitForPort, KeyPath helpers
 ├── mount/
-│   ├── backends.go   # Backend type, Config, AutoMount, AutoUnmount
-│   └── setup.go      # In-VM mount + share server lifecycle (Setup/Teardown)
+│   ├── backends.go      # Backend type, Config, AutoMount, AutoUnmount
+│   ├── setup.go         # In-VM mount + share server lifecycle (Setup/Teardown)
+│   └── sshfs.go         # SSHFS backend: MountSSHFS / UnmountSSHFS
+├── integration/
+│   └── vm_nfs_test.go   # Integration test: boot VM, mount ext4, verify NFS share
 ├── go.mod
 └── docs/
-    └── libkrun.md    # Notes on the libkrun hypervisor alternative
+    └── libkrun.md       # Notes on the libkrun hypervisor alternative
 ```
 
 ## License

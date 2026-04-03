@@ -191,28 +191,36 @@ vgchange -ay %s
 	// ── Step 3: Mount ───────────────────────────────────────────────────────
 	fmt.Fprintf(&b, "mkdir -p %s\n", vmMountPoint)
 
-	// ZFS pools must be imported before mounting. Import by device path so
-	// the pool name doesn't need to be known in advance.
+	// ZFS: import the pool from the block device, then mount by pool name.
+	// `mount -t zfs` requires a dataset name, not a block device path.
+	// We query the pool name from `zpool import` dry-run output, then
+	// import and mount by name.
 	if opts.FSType == "zfs" {
-		fmt.Fprintf(&b, "zpool import -d \"$MOUNT_DEV\" -a -f 2>/dev/null || true\n")
+		fmt.Fprintf(&b, `ZFS_POOL=$(zpool import -d "$MOUNT_DEV" 2>/dev/null | awk '/pool:/{print $2}' | head -1)
+if [ -z "$ZFS_POOL" ]; then
+    echo "ERROR: no ZFS pool found on $MOUNT_DEV" >&2; exit 1
+fi
+zpool import -d "$MOUNT_DEV" -f "$ZFS_POOL" 2>/dev/null || true
+mount -t zfs "$ZFS_POOL" %s
+`, vmMountPoint)
+	} else {
+		mountCmd := "mount"
+		if opts.FSType != "" {
+			mountCmd += fmt.Sprintf(" -t %s", opts.FSType)
+		}
+		var mountOptsAll []string
+		if opts.ReadOnly {
+			mountOptsAll = append(mountOptsAll, "ro")
+		}
+		if opts.MountOpts != "" {
+			mountOptsAll = append(mountOptsAll, opts.MountOpts)
+		}
+		if len(mountOptsAll) > 0 {
+			mountCmd += fmt.Sprintf(" -o %s", strings.Join(mountOptsAll, ","))
+		}
+		mountCmd += fmt.Sprintf(` "$MOUNT_DEV" %s`, vmMountPoint)
+		fmt.Fprintf(&b, "%s\n", mountCmd)
 	}
-
-	mountCmd := fmt.Sprintf("mount")
-	if opts.FSType != "" {
-		mountCmd += fmt.Sprintf(" -t %s", opts.FSType)
-	}
-	var mountOptsAll []string
-	if opts.ReadOnly {
-		mountOptsAll = append(mountOptsAll, "ro")
-	}
-	if opts.MountOpts != "" {
-		mountOptsAll = append(mountOptsAll, opts.MountOpts)
-	}
-	if len(mountOptsAll) > 0 {
-		mountCmd += fmt.Sprintf(" -o %s", strings.Join(mountOptsAll, ","))
-	}
-	mountCmd += fmt.Sprintf(" \"$MOUNT_DEV\" %s", vmMountPoint)
-	fmt.Fprintf(&b, "%s\n", mountCmd)
 
 	// ── Step 4: Share server ─────────────────────────────────────────────────
 	// Empty backend means mount-only (used by sshfs path) — skip share server.

@@ -91,6 +91,7 @@ Flags:
 		DevicePath: devicePath,
 		Debug:      flagDebug,
 		DataDir:    flagDataDir,
+		SSHPort:    uint16(flagSSHPort), //nolint:gosec
 	}
 
 	v, err := vm.New(context.Background(), vmCfg, logger)
@@ -114,9 +115,14 @@ Flags:
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-p", fmt.Sprintf("%d", v.SSHPort),
+	}
+	if key := v.KeyPath(); key != "" {
+		sshArgs = append(sshArgs, "-i", key)
+	}
+	sshArgs = append(sshArgs,
 		fmt.Sprintf("%s@127.0.0.1", v.User()),
 		remoteCmd,
-	}
+	)
 
 	if flagDebug {
 		fmt.Printf("SSH: ssh %s\n", strings.Join(sshArgs, " "))
