@@ -9,10 +9,15 @@ After=local-fs.target
 Requires=local-fs.target
 
 [Service]
-Type=forking
-PIDFile=/run/bdfs/daemon.pid
+# Type=simple: systemd tracks the process it spawns directly.
+# The daemon must not double-fork (no daemon()/daemonize() call) when
+# running under systemd — use -f (foreground) if the binary supports it,
+# or remove internal daemonization. Type=forking requires a PIDFile that
+# bdfs_daemon never writes, causing systemd to report the service as failed.
+Type=simple
 ExecStartPre=/bin/mkdir -p /run/bdfs /var/lib/bdfs
 ExecStart=@BDFS_DAEMON_BIN@ \
+    -f \
     -c /dev/bdfs_ctl \
     -s /run/bdfs/daemon.sock \
     -d /var/lib/bdfs \

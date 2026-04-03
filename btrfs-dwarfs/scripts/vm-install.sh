@@ -156,13 +156,19 @@ if command -v systemctl >/dev/null 2>&1; then
 
 elif command -v rc-update >/dev/null 2>&1; then
     # Alpine OpenRC: write a simple init script.
+    # command_background=false: the daemon calls daemon()/daemonize()
+    # internally, so OpenRC must not also background it. If OpenRC
+    # backgrounds the process and the daemon then double-forks, OpenRC
+    # records the intermediate child PID which exits immediately — leaving
+    # the real daemon untracked and rc-service stop sending SIGTERM to a
+    # dead PID.
     cat > /etc/init.d/bdfs_daemon << RCEOF
 #!/sbin/openrc-run
 name="bdfs_daemon"
 description="BTRFS+DwarFS framework daemon"
 command="${INSTALL_PREFIX}/sbin/bdfs_daemon"
-command_background=true
-pidfile="/run/bdfs_daemon.pid"
+command_args="-c /dev/bdfs_ctl -s /run/bdfs/daemon.sock -d /var/lib/bdfs -j 4"
+command_background=false
 depend() { need localmount; }
 RCEOF
     chmod +x /etc/init.d/bdfs_daemon

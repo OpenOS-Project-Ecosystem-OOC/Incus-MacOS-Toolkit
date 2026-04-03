@@ -224,6 +224,7 @@ Flags:
 		VMPid:      v.Pid(),
 		SSHPort:    v.SSHPort,
 		VMUser:     provider.DefaultUser(),
+		VMKeyPath:  v.KeyPath(),
 		LUKS:       *luks,
 		LVM:        *lvm,
 	})
@@ -358,7 +359,13 @@ Flags:
 			LVM:     rec.LVM,
 		}
 		script := mount.InVMTeardownScript(teardownOpts)
-		keyPath := vmKeyPath(flagDataDir)
+		// Prefer the key path recorded at mount time; fall back to
+		// reconstructing from --data-dir for records created before this field
+		// was added (empty VMKeyPath means ssh will use agent/default keys).
+		keyPath := rec.VMKeyPath
+		if keyPath == "" {
+			keyPath = vmKeyPath(flagDataDir)
+		}
 		if out, err := vm.RunScriptOnPort(rec.SSHPort, rec.VMUser, keyPath, script); err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: in-VM teardown: %v\nOutput:\n%s\n", err, out)
 		}

@@ -58,6 +58,8 @@ parse_args() {
     [[ -n "$FIRMWARE_DIR" ]] || die "--firmware-dir is required"
     [[ -f "$FIRMWARE_DIR/OVMF_CODE_4M.fd" ]] \
         || die "OVMF_CODE_4M.fd not found in $FIRMWARE_DIR. Run: make firmware"
+    [[ -f "$FIRMWARE_DIR/OVMF_VARS-1920x1080.fd" ]] \
+        || die "OVMF_VARS-1920x1080.fd not found in $FIRMWARE_DIR. Run: make firmware"
 
     [[ -n "$OPENCORE_IMG" ]] || die "--opencore is required"
     [[ -f "$OPENCORE_IMG" ]] \

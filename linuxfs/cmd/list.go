@@ -20,6 +20,10 @@ type MountRecord struct {
 	// VMUser is the SSH login user inside the VM (provider.DefaultUser()).
 	// Needed by runUnmount to SSH in and run the in-VM teardown script.
 	VMUser string `json:"vm_user,omitempty"`
+	// VMKeyPath is the absolute path to the SSH private key used to connect
+	// to the VM. Persisted so runUnmount can authenticate even when
+	// --data-dir differs between mount and unmount invocations.
+	VMKeyPath string `json:"vm_key_path,omitempty"`
 	// LUKS is the in-VM device opened as a LUKS container, if any.
 	// Persisted so runUnmount can close it during teardown.
 	LUKS string `json:"luks,omitempty"`

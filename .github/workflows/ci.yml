@@ -278,10 +278,10 @@ jobs:
             -I include/uapi \
             userspace/daemon/ userspace/cli/
 
-  # ── linuxfs: VM integration test (boot Alpine, mount ext4, NFS) ──────────
+  # ── linuxfs: VM integration test (boot Debian, mount ext4, NFS) ──────────
 
   linuxfs-integration:
-    name: linuxfs / integration test (Alpine + NFS)
+    name: linuxfs / integration test (Debian + NFS)
     runs-on: ubuntu-latest
     # Needs KVM access; GitHub-hosted ubuntu-latest runners have /dev/kvm.
     steps:

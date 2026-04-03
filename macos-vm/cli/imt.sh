@@ -230,6 +230,8 @@ cmd_vm_create() {
 
     [[ -f "$firmware_dir/OVMF_CODE_4M.fd" ]] \
         || die "OVMF firmware missing. Run: imt image firmware"
+    [[ -f "$firmware_dir/OVMF_VARS-1920x1080.fd" ]] \
+        || die "OVMF_VARS-1920x1080.fd missing. Run: imt image firmware"
     [[ -f "$opencore_img" ]] \
         || die "OpenCore not found. Run: imt image opencore"
     [[ -f "$installer_img" ]] \
