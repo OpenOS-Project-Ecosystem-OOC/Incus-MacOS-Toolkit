@@ -288,16 +288,12 @@ func (v *VM) waitForCloudInit(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
 	for time.Now().Before(deadline) {
-		// Only check for the custom sentinel written by the last runcmd entry.
-		// This file is created after all runcmd commands complete, including
-		// package installation.
-		// Poll until the custom sentinel exists AND the expected package
-		// is installed. This double-check prevents false positives from
-		// stale sentinel files or SSH banner pollution.
+		// Poll for the sentinel file written by the last runcmd entry.
+		// The sentinel lives on /run (tmpfs), so it cannot be a leftover
+		// from a previous boot. The qcow2 overlay guarantees a clean disk
+		// state on every VM start, so no additional package check is needed.
 		out, err := v.Run(
-			"test -f /run/cloud-init-custom-done" +
-				" && command -v exportfs >/dev/null 2>&1" +
-				" && echo RUNCMD_COMPLETE || echo RUNCMD_PENDING",
+			"test -f /run/cloud-init-custom-done && echo RUNCMD_COMPLETE || echo RUNCMD_PENDING",
 		)
 		if err == nil && strings.Contains(out, "RUNCMD_COMPLETE") {
 			v.logger.Info("cloud-init ready")
