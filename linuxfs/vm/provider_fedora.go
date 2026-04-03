@@ -4,20 +4,19 @@ package vm
 
 import "fmt"
 
-const fedoraVersion = "41"
+const fedoraVersion = "42"
 
-// FedoraProvider uses Fedora Cloud Base images.
+// FedoraProvider uses Fedora Cloud Generic images.
 // Useful when SELinux or RPM-based tooling is required.
 type FedoraProvider struct{}
 
 func (FedoraProvider) Name() string { return "fedora" }
 
 func (FedoraProvider) ImageURL(arch Arch) string {
-	// Fedora cloud images: https://fedoraproject.org/cloud/download
-	// The filename encodes the arch twice: once in the directory path and
-	// once in the filename itself (e.g. Fedora-Cloud-Base-41-1.4.aarch64.qcow2).
+	// Fedora 42+ uses "Generic" instead of "Cloud-Base" in the filename.
+	// https://fedoraproject.org/cloud/download
 	return fmt.Sprintf(
-		"https://download.fedoraproject.org/pub/fedora/linux/releases/%s/Cloud/%s/images/Fedora-Cloud-Base-%s-1.4.%s.qcow2",
+		"https://download.fedoraproject.org/pub/fedora/linux/releases/%s/Cloud/%s/images/Fedora-Cloud-Generic-%s-1.1.%s.qcow2",
 		fedoraVersion, arch.FedoraString(), fedoraVersion, arch.FedoraString(),
 	)
 }
@@ -36,6 +35,10 @@ func (FedoraProvider) CloudInitPackages() []string {
 		"cryptsetup",
 		"fuse3",
 		"rsync",
+		// ZFS on Fedora requires the ZFS on Linux COPR repo; it is not in
+		// the default Fedora repos. Install zfs-fuse as a lightweight
+		// alternative that is available without extra repos.
+		"zfs-fuse",
 	}
 }
 

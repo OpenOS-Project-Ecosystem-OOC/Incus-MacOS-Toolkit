@@ -38,6 +38,7 @@ func runShell(args []string) {
 		DevicePath: device,
 		Debug:      flagDebug,
 		DataDir:    flagDataDir,
+		SSHPort:    uint16(flagSSHPort), //nolint:gosec
 	}
 
 	v, err := vm.New(context.Background(), vmCfg, logger)
@@ -58,8 +59,11 @@ func runShell(args []string) {
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-p", fmt.Sprintf("%d", v.SSHPort),
-		fmt.Sprintf("%s@127.0.0.1", v.User()),
 	}
+	if key := v.KeyPath(); key != "" {
+		sshArgs = append(sshArgs, "-i", key)
+	}
+	sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", v.User()))
 	fmt.Printf("Connecting: ssh %v\n", sshArgs)
 
 	sshCmd := exec.Command("ssh", sshArgs...)

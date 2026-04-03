@@ -158,8 +158,10 @@ _VM_USER_alpine  = alpine
 _VM_USER_debian  = debian
 _VM_USER_ubuntu  = ubuntu
 _VM_USER_fedora  = fedora
-# Use explicit VM_USER if set, otherwise derive from VM_DISTRO.
-_EFFECTIVE_VM_USER = $(if $(filter-out alpine,$(VM_USER)),$(VM_USER),$(or $(_VM_USER_$(VM_DISTRO)),alpine))
+# Use VM_USER only when explicitly set on the command line; otherwise
+# derive from VM_DISTRO. $(origin) returns "command line" for explicit
+# overrides and "default"/"file" for values from the Makefile itself.
+_EFFECTIVE_VM_USER = $(if $(filter command line,$(origin VM_USER)),$(VM_USER),$(or $(_VM_USER_$(VM_DISTRO)),alpine))
 
 bdfs-vm-provision:
 	@echo "Starting $(VM_DISTRO) VM for bdfs provisioning ..."
