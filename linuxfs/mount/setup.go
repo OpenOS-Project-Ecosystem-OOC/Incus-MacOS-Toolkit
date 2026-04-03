@@ -293,7 +293,9 @@ elif command -v systemctl >/dev/null 2>&1; then
     systemctl restart nfs-kernel-server 2>/dev/null || \
         systemctl restart nfs-server 2>/dev/null || true
 fi
-exportfs -ra 2>/dev/null || true
+exportfs -ra
+# Brief pause so NFSD registers the new export before clients connect.
+sleep 1
 # Verify both NFS data port and mountd are listening.
 ss -tlnp 2>/dev/null | grep -E ':2049|:20048' || true
 `, vmMountPoint, vmMountPoint, listenIP, roFlag)
