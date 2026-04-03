@@ -45,6 +45,7 @@ Commands:
   cloud-sync  Sync VM backups to cloud storage via rclone
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
+  profiles    Manage Incus profiles (list, install, diff, apply)
   update      Check for and install imt updates
   doctor      Check prerequisites
   config      Show or initialise configuration
@@ -2324,6 +2325,175 @@ EOF
     esac
 }
 
+# ── profiles ─────────────────────────────────────────────────────────────────
+
+cmd_profiles() {
+    local subcmd="${1:-help}"; shift || true
+
+    # Profile directory: alongside this script, then standard locations
+    local _script_dir
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _profile_dirs=(
+        "${_script_dir}/../incus"
+        "${HOME}/.local/share/imt/profiles"
+        "/usr/local/share/imt/profiles"
+        "/usr/share/imt/profiles"
+    )
+
+    _imt_find_profile_dir() {
+        local d
+        for d in "${_profile_dirs[@]}"; do
+            [ -d "$d" ] && echo "$d" && return 0
+        done
+        die "No profile directory found"
+    }
+
+    _imt_find_profile_file() {
+        local name="$1"
+        local d
+        for d in "${_profile_dirs[@]}"; do
+            local f="${d}/${name}.yaml"
+            [ -f "$f" ] && echo "$f" && return 0
+        done
+        return 1
+    }
+
+    _imt_install_one() {
+        local name="$1" file="$2"
+        if incus profile show "$name" &>/dev/null 2>&1; then
+            incus profile edit "$name" < "$file"
+            ok "  updated : $name"
+        else
+            incus profile create "$name"
+            incus profile edit "$name" < "$file"
+            ok "  created : $name"
+        fi
+    }
+
+    case "$subcmd" in
+        list)
+            local pdir
+            pdir=$(_imt_find_profile_dir)
+            info "Available profiles (${pdir}):"
+            for f in "${pdir}"/*.yaml; do
+                [ -f "$f" ] || continue
+                local pname desc
+                pname=$(basename "$f" .yaml)
+                desc=$(grep -m1 '^description:' "$f" 2>/dev/null \
+                       | sed 's/^description:[[:space:]]*//' | tr -d '"' || true)
+                if [ -n "$desc" ]; then
+                    printf "  %-30s  %s\n" "$pname" "$desc"
+                else
+                    printf "  %s\n" "$pname"
+                fi
+            done
+            ;;
+
+        show)
+            local name="${1:?Usage: imt profiles show <name>}"
+            local file
+            file=$(_imt_find_profile_file "$name") \
+                || die "Profile not found: $name"
+            cat "$file"
+            ;;
+
+        install)
+            require_incus
+            local all=0 names=()
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --all) all=1; shift ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) names+=("$1"); shift ;;
+                esac
+            done
+            local pdir
+            pdir=$(_imt_find_profile_dir)
+            if [[ "$all" -eq 1 ]] || [[ "${#names[@]}" -eq 0 ]]; then
+                for f in "${pdir}"/*.yaml; do
+                    [ -f "$f" ] || continue
+                    _imt_install_one "$(basename "$f" .yaml)" "$f"
+                done
+            else
+                for n in "${names[@]}"; do
+                    local file
+                    file=$(_imt_find_profile_file "$n") \
+                        || die "Profile not found: $n"
+                    _imt_install_one "$n" "$file"
+                done
+            fi
+            ;;
+
+        diff)
+            require_incus
+            local pdir
+            pdir=$(_imt_find_profile_dir)
+            for f in "${pdir}"/*.yaml; do
+                [ -f "$f" ] || continue
+                local pname
+                pname=$(basename "$f" .yaml)
+                if incus profile show "$pname" &>/dev/null 2>&1; then
+                    local d
+                    d=$(diff <(incus profile show "$pname") "$f" || true)
+                    if [ -n "$d" ]; then
+                        info "--- $pname (incus vs local) ---"
+                        echo "$d"
+                    else
+                        ok "  $pname: in sync"
+                    fi
+                else
+                    warn "  $pname: not installed (run: imt profiles install $pname)"
+                fi
+            done
+            ;;
+
+        apply)
+            local ct="${1:?Usage: imt profiles apply <vm> <profile>}"
+            local profile="${2:?Usage: imt profiles apply <vm> <profile>}"
+            require_incus
+            incus profile show "$profile" &>/dev/null 2>&1 \
+                || die "Profile '$profile' not installed. Run: imt profiles install $profile"
+            incus profile add "$ct" "$profile"
+            ok "Applied profile '$profile' to VM '$ct'"
+            ;;
+
+        remove)
+            local ct="${1:?Usage: imt profiles remove <vm> <profile>}"
+            local profile="${2:?Usage: imt profiles remove <vm> <profile>}"
+            require_incus
+            incus profile remove "$ct" "$profile"
+            ok "Removed profile '$profile' from VM '$ct'"
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+imt profiles — manage Incus profiles for macOS VMs
+
+Usage: imt profiles <subcommand> [options]
+
+Subcommands:
+  list                    List available profile files
+  show <name>             Print a profile's YAML
+  install [--all] [name]  Install profile(s) into Incus
+  diff                    Compare local files with Incus
+  apply <vm> <profile>    Apply a profile to a VM
+  remove <vm> <profile>   Remove a profile from a VM
+
+Available profiles:
+  macos-kvm    macOS KVM profile (QEMU overrides, network, firmware paths)
+
+Examples:
+  imt profiles install
+  imt profiles show macos-kvm
+  imt profiles diff
+  imt profiles apply macos-sonoma macos-kvm
+EOF
+            ;;
+
+        *) die "Unknown profiles subcommand: $subcmd. Run: imt profiles help" ;;
+    esac
+}
+
 # ── Self-update ───────────────────────────────────────────────────────────────
 
 _IMT_GITHUB_REPO="Interested-Deving-1896/Incus-MacOS-Toolkit"
@@ -2728,6 +2898,7 @@ main() {
         cloud-sync)     cmd_cloud_sync "$@" ;;
         demo)           cmd_demo       "$@" ;;
         winesapos)      cmd_winesapos  "$@" ;;
+        profiles)       cmd_profiles   "$@" ;;
         update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
