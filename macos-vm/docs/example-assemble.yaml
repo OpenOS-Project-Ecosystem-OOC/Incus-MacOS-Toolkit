@@ -1,0 +1,24 @@
+# imt vm assemble — example VM fleet file
+#
+# Usage:
+#   imt vm assemble --file docs/example-assemble.yaml
+#   imt vm assemble --file docs/example-assemble.yaml --dry-run
+#
+# All fields except 'name' are optional; defaults are used when omitted.
+# Run 'imt vm assemble --help' for the full schema.
+
+vms:
+  - name: macos-sonoma
+    version: sonoma
+    ram: 8GiB
+    cpus: 6
+    disk: 128GiB
+
+  - name: macos-ventura
+    version: ventura
+    ram: 4GiB
+    cpus: 4
+    disk: 128GiB
+
+  - name: macos-monterey
+    version: monterey

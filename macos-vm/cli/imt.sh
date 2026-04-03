@@ -41,7 +41,7 @@ Usage: imt <command> [options]
 
 Commands:
   image     Manage macOS disk images (fetch, build)
-  vm        Manage macOS VMs in Incus (create, start, stop, ...)
+  vm        Manage macOS VMs in Incus (create, start, stop, backup, restore, ...)
   doctor    Check prerequisites
   config    Show or initialise configuration
   version   Print version
@@ -160,6 +160,9 @@ cmd_vm() {
         console)  cmd_vm_console "$@" ;;
         shell)    cmd_vm_shell "$@" ;;
         snapshot) cmd_vm_snapshot "$@" ;;
+        backup)   cmd_vm_backup "$@" ;;
+        restore)  cmd_vm_restore "$@" ;;
+        assemble) cmd_vm_assemble "$@" ;;
         delete)   cmd_vm_delete "$@" ;;
         list)     cmd_vm_list "$@" ;;
         help|--help|-h)
@@ -174,6 +177,9 @@ Subcommands:
   console   Attach to the VM console (serial/VGA)
   shell     Open a shell inside the running VM via incus exec
   snapshot  Create a named snapshot
+  backup    Export the VM and its storage volumes to a directory
+  restore   Import a VM from a backup directory
+  assemble  Create/update VMs from a declarative YAML file
   delete    Delete the VM and its installer storage volume
   list      List all imt-managed VMs
 
@@ -386,6 +392,242 @@ cmd_vm_snapshot() {
     ok "Snapshot created: $VM_NAME/$snap_name"
 }
 
+cmd_vm_assemble() {
+    local assemble_file=""
+    local dryrun=false
+    local replace=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--file)    assemble_file="$2"; shift 2 ;;
+            -d|--dry-run) dryrun=true;        shift ;;
+            --replace)    replace=true;       shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: imt vm assemble [OPTIONS] --file FILE
+
+Create or update macOS VMs from a declarative YAML file.
+
+Options:
+  -f, --file FILE   YAML file describing VMs (required)
+      --replace     Stop and recreate existing VMs
+  -d, --dry-run     Print commands without executing
+  -h, --help        Show this help
+
+YAML schema:
+  vms:
+    - name: macos-sonoma          # VM name (required)
+      version: sonoma             # macOS version (default: sonoma)
+      ram: 4GiB                   # RAM (default: 4GiB)
+      cpus: 4                     # CPU count (default: 4)
+      disk: 128GiB                # Disk size (default: 128GiB)
+
+Example:
+  vms:
+    - name: macos-sonoma
+      version: sonoma
+      ram: 8GiB
+      cpus: 6
+    - name: macos-ventura
+      version: ventura
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    [[ -z "$assemble_file" ]] && die "--file is required"
+    [[ -f "$assemble_file" ]] || die "File not found: $assemble_file"
+
+    require_incus
+
+    # ── minimal YAML parser ───────────────────────────────────────────────────
+    # Reads the 'vms:' list and extracts per-VM fields.
+    # Outputs: VM_COUNT=N  V0_name=...  V0_version=...  etc.
+    local parsed
+    parsed="$(awk '
+        /^vms:/ { in_vms=1; next }
+        in_vms && /^[[:space:]]+-[[:space:]]+name:/ {
+            idx++
+            val=$0; sub(/.*name:[[:space:]]*/, "", val)
+            print "V" (idx-1) "_name=" val
+            next
+        }
+        in_vms && idx>0 && /^[[:space:]]+[a-z]+:/ {
+            key=$0; sub(/[[:space:]]*/,"",key); sub(/:.*$/,"",key)
+            val=$0; sub(/.*:[[:space:]]*/,"",val)
+            print "V" (idx-1) "_" key "=" val
+            next
+        }
+        in_vms && /^[^[:space:]]/ && !/^vms:/ { in_vms=0 }
+        END { print "VM_COUNT=" idx }
+    ' "$assemble_file")"
+
+    local vm_count=0
+    while IFS= read -r line; do
+        [[ "$line" =~ ^VM_COUNT=([0-9]+)$ ]] && vm_count="${BASH_REMATCH[1]}"
+    done <<< "$parsed"
+
+    if [[ "$vm_count" -eq 0 ]]; then
+        die "No VMs found in $assemble_file"
+    fi
+
+    info "Found $vm_count VM(s) in $assemble_file"
+
+    local i=0
+    while [[ "$i" -lt "$vm_count" ]]; do
+        # Extract per-VM variables from parsed output
+        local vm_name="" vm_version="" vm_ram="" vm_cpus="" vm_disk=""
+        while IFS= read -r line; do
+            [[ "$line" =~ ^V${i}_name=(.+)$    ]] && vm_name="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^V${i}_version=(.+)$ ]] && vm_version="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^V${i}_ram=(.+)$     ]] && vm_ram="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^V${i}_cpus=(.+)$    ]] && vm_cpus="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^V${i}_disk=(.+)$    ]] && vm_disk="${BASH_REMATCH[1]}"
+        done <<< "$parsed"
+
+        [[ -z "$vm_name" ]] && { warn "VM $i has no name, skipping"; i=$((i+1)); continue; }
+
+        log ""
+        log "── VM: $vm_name ──"
+
+        # Handle --replace
+        if [[ "$replace" == true ]] && incus info "$vm_name" &>/dev/null 2>&1; then
+            if [[ "$dryrun" == true ]]; then
+                log "[dry-run] imt vm delete $vm_name"
+            else
+                log "Removing existing VM '$vm_name' (--replace) ..."
+                incus stop --force "$vm_name" 2>/dev/null || true
+                incus delete "$vm_name" 2>/dev/null || true
+            fi
+        fi
+
+        # Build create args
+        local create_args=()
+        [[ -n "$vm_name"    ]] && create_args+=(--name    "$vm_name")
+        [[ -n "$vm_version" ]] && create_args+=(--version "$vm_version")
+        [[ -n "$vm_ram"     ]] && create_args+=(--ram     "$vm_ram")
+        [[ -n "$vm_cpus"    ]] && create_args+=(--cpus    "$vm_cpus")
+        [[ -n "$vm_disk"    ]] && create_args+=(--disk    "$vm_disk")
+
+        if incus info "$vm_name" &>/dev/null 2>&1; then
+            log "VM '$vm_name' already exists — skipping (use --replace to recreate)."
+        elif [[ "$dryrun" == true ]]; then
+            log "[dry-run] imt vm create ${create_args[*]}"
+        else
+            cmd_vm_create "${create_args[@]}" || \
+                warn "Failed to create VM '$vm_name'"
+        fi
+
+        i=$((i+1))
+    done
+
+    log ""
+    log "Assembly complete."
+}
+
+cmd_vm_backup() {
+    local output_dir=""
+    local version="${IMT_VERSION:-sonoma}"
+    local name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)  version="$2";     shift 2 ;;
+            --name)     name="$2";        shift 2 ;;
+            --output|-o) output_dir="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -z "$name" ]] && name="macos-${version}"
+    [[ -z "$output_dir" ]] && output_dir="${name}-backup-$(date +%Y%m%d-%H%M%S)"
+
+    require_incus
+
+    mkdir -p "$output_dir"
+    info "Backing up VM '$name' to '$output_dir' ..."
+
+    # Export the Incus instance (metadata + root disk if managed by Incus)
+    info "Exporting instance metadata ..."
+    incus export "$name" "${output_dir}/${name}.tar.gz" 2>/dev/null || \
+        warn "Instance export failed or VM has no Incus-managed root disk — skipping."
+
+    # Export each custom storage volume
+    for suffix in disk opencore installer; do
+        local vol="${name}-${suffix}"
+        if incus storage volume show "$IMT_STORAGE_POOL" "$vol" &>/dev/null 2>&1; then
+            info "Exporting storage volume '$vol' ..."
+            incus storage volume export \
+                "$IMT_STORAGE_POOL" "$vol" \
+                "${output_dir}/${vol}.tar.gz"
+            ok "Exported: ${output_dir}/${vol}.tar.gz"
+        else
+            info "Volume '$vol' not found — skipping."
+        fi
+    done
+
+    ok "Backup complete: $output_dir"
+    echo ""
+    bold "To restore:"
+    echo "  imt vm restore --name $name --from $output_dir"
+}
+
+cmd_vm_restore() {
+    local from_dir=""
+    local version="${IMT_VERSION:-sonoma}"
+    local name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)   version="$2";  shift 2 ;;
+            --name)      name="$2";     shift 2 ;;
+            --from|-f)   from_dir="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -z "$from_dir" ]] && die "--from DIR is required"
+    [[ -d "$from_dir" ]] || die "Backup directory not found: $from_dir"
+    [[ -z "$name" ]] && name="macos-${version}"
+
+    require_incus
+
+    info "Restoring VM '$name' from '$from_dir' ..."
+
+    # Restore custom storage volumes first
+    for suffix in disk opencore installer; do
+        local vol="${name}-${suffix}"
+        local archive="${from_dir}/${vol}.tar.gz"
+        if [[ -f "$archive" ]]; then
+            if incus storage volume show "$IMT_STORAGE_POOL" "$vol" &>/dev/null 2>&1; then
+                warn "Volume '$vol' already exists — skipping import."
+            else
+                info "Importing storage volume '$vol' ..."
+                incus storage volume import "$IMT_STORAGE_POOL" "$archive" "$vol"
+                ok "Imported: $vol"
+            fi
+        else
+            info "No archive for '$vol' in $from_dir — skipping."
+        fi
+    done
+
+    # Restore the instance if an instance archive exists
+    local instance_archive="${from_dir}/${name}.tar.gz"
+    if [[ -f "$instance_archive" ]]; then
+        if incus info "$name" &>/dev/null 2>&1; then
+            warn "Instance '$name' already exists — skipping instance import."
+        else
+            info "Importing instance '$name' ..."
+            incus import "$instance_archive" --storage "$IMT_STORAGE_POOL"
+            ok "Instance imported: $name"
+        fi
+    else
+        info "No instance archive found in $from_dir."
+        info "If the VM was created with 'imt vm create', re-run it to recreate the instance."
+    fi
+
+    ok "Restore complete."
+}
+
 cmd_vm_delete() {
     _vm_parse_name "$@"
     require_incus
@@ -521,8 +763,8 @@ cmd_version() {
 main() {
     local cmd="${1:-help}"; shift || true
     case "$cmd" in
-        image)          cmd_image "$@" ;;
-        vm)             cmd_vm "$@" ;;
+        image)          cmd_image  "$@" ;;
+        vm)             cmd_vm     "$@" ;;
         doctor)         cmd_doctor "$@" ;;
         config)         cmd_config "$@" ;;
         version|--version) cmd_version ;;
