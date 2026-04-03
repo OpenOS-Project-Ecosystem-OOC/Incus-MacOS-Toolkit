@@ -160,11 +160,15 @@ cmd_vm() {
         console)  cmd_vm_console "$@" ;;
         shell)    cmd_vm_shell "$@" ;;
         snapshot) cmd_vm_snapshot "$@" ;;
-        backup)   cmd_vm_backup "$@" ;;
+        export)   cmd_vm_export  "$@" ;;
+        import)   cmd_vm_import  "$@" ;;
+        fleet)    cmd_vm_fleet   "$@" ;;
+        monitor)  cmd_vm_monitor "$@" ;;
+        backup)   cmd_vm_backup  "$@" ;;
         restore)  cmd_vm_restore "$@" ;;
         assemble) cmd_vm_assemble "$@" ;;
-        delete)   cmd_vm_delete "$@" ;;
-        list)     cmd_vm_list "$@" ;;
+        delete)   cmd_vm_delete  "$@" ;;
+        list)     cmd_vm_list    "$@" ;;
         help|--help|-h)
             cat <<EOF
 Usage: imt vm <subcommand> [options]
@@ -176,7 +180,11 @@ Subcommands:
   status    Show VM info
   console   Attach to the VM console (serial/VGA)
   shell     Open a shell inside the running VM via incus exec
-  snapshot  Create a named snapshot
+  snapshot  Create, list, restore, and delete VM snapshots
+  export    Publish VM as a reusable Incus image
+  import    Create a VM from a published image or backup
+  fleet     Multi-VM orchestration (start-all, stop-all, backup-all)
+  monitor   Show VM resource usage and stats
   backup    Export the VM and its storage volumes to a directory
   restore   Import a VM from a backup directory
   assemble  Create/update VMs from a declarative YAML file
@@ -381,15 +389,110 @@ cmd_vm_shell() {
 }
 
 cmd_vm_snapshot() {
-    _vm_parse_name "$@"
+    local subcmd="${1:-help}"
+    shift || true
+
+    case "${subcmd}" in
+        create)  _cmd_vm_snapshot_create "$@" ;;
+        list|ls) _cmd_vm_snapshot_list   "$@" ;;
+        restore) _cmd_vm_snapshot_restore "$@" ;;
+        delete|rm|remove) _cmd_vm_snapshot_delete "$@" ;;
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm snapshot <subcommand> [options]
+
+Subcommands:
+  create  [NAME] [--name VM]   Take a snapshot (default name: snap-<timestamp>)
+  list           [--name VM]   List all snapshots
+  restore NAME   [--name VM]   Restore to a snapshot
+  delete  NAME   [--name VM]   Delete a snapshot
+
+Examples:
+  imt vm snapshot create --name macos-sonoma
+  imt vm snapshot create before-update --name macos-sonoma
+  imt vm snapshot list --name macos-sonoma
+  imt vm snapshot restore before-update --name macos-sonoma
+  imt vm snapshot delete before-update --name macos-sonoma
+EOF
+            ;;
+        # Legacy: bare 'imt vm snapshot' with no subcommand → create
+        *)
+            _cmd_vm_snapshot_create "${subcmd}" "$@" ;;
+    esac
+}
+
+_cmd_vm_snapshot_create() {
+    local snap_name="" version="${IMT_VERSION:-sonoma}" vm_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --name)    vm_name="$2"; shift 2 ;;
+            -*)        die "Unknown option: $1" ;;
+            *)         snap_name="$1"; shift ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+    [[ -z "${snap_name}" ]] && snap_name="snap-$(date +%Y%m%d-%H%M%S)"
     require_incus
-    local snap_name
-    snap_name="snap-$(date +%Y%m%d-%H%M%S)"
-    # Allow caller to pass a custom snapshot name as first extra arg
-    [[ ${#_VM_EXTRA[@]} -gt 0 ]] && snap_name="${_VM_EXTRA[0]}"
-    info "Creating snapshot '$snap_name' of $VM_NAME ..."
-    incus snapshot create "$VM_NAME" "$snap_name"
-    ok "Snapshot created: $VM_NAME/$snap_name"
+    info "Creating snapshot '${snap_name}' of '${vm_name}' ..."
+    incus snapshot create "${vm_name}" "${snap_name}"
+    ok "Snapshot created: ${vm_name}/${snap_name}"
+}
+
+_cmd_vm_snapshot_list() {
+    local version="${IMT_VERSION:-sonoma}" vm_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --name)    vm_name="$2"; shift 2 ;;
+            -*)        die "Unknown option: $1" ;;
+            *)         shift ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+    require_incus
+    info "Snapshots of '${vm_name}':"
+    incus info "${vm_name}" | awk '
+        /^Snapshots:/ { in_snap=1; next }
+        in_snap && /^[[:space:]]/ { print }
+        in_snap && /^[^[:space:]]/ { in_snap=0 }
+    '
+}
+
+_cmd_vm_snapshot_restore() {
+    local snap_name="" version="${IMT_VERSION:-sonoma}" vm_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --name)    vm_name="$2"; shift 2 ;;
+            -*)        die "Unknown option: $1" ;;
+            *)         snap_name="$1"; shift ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+    [[ -z "${snap_name}" ]] && die "Snapshot name required. Usage: imt vm snapshot restore NAME [--name VM]"
+    require_incus
+    info "Restoring '${vm_name}' to snapshot '${snap_name}' ..."
+    incus snapshot restore "${vm_name}" "${snap_name}"
+    ok "Restored: ${vm_name} → ${snap_name}"
+}
+
+_cmd_vm_snapshot_delete() {
+    local snap_name="" version="${IMT_VERSION:-sonoma}" vm_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --name)    vm_name="$2"; shift 2 ;;
+            -*)        die "Unknown option: $1" ;;
+            *)         snap_name="$1"; shift ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+    [[ -z "${snap_name}" ]] && die "Snapshot name required. Usage: imt vm snapshot delete NAME [--name VM]"
+    require_incus
+    info "Deleting snapshot '${snap_name}' from '${vm_name}' ..."
+    incus snapshot delete "${vm_name}" "${snap_name}"
+    ok "Deleted: ${vm_name}/${snap_name}"
 }
 
 cmd_vm_assemble() {
@@ -526,6 +629,431 @@ EOF
 
     log ""
     log "Assembly complete."
+}
+
+cmd_vm_export() {
+    local version="${IMT_VERSION:-sonoma}" vm_name="" alias="" output=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)    version="$2";  shift 2 ;;
+            --name)       vm_name="$2";  shift 2 ;;
+            --alias|-a)   alias="$2";    shift 2 ;;
+            --output|-o)  output="$2";   shift 2 ;;
+            -h|--help)
+                cat <<EOF
+Usage: imt vm export [OPTIONS]
+
+Publish a macOS VM as a reusable Incus image.
+
+Options:
+  --name NAME       VM name (default: macos-<version>)
+  --version VER     macOS version (default: \${IMT_VERSION:-sonoma})
+  --alias ALIAS     Image alias (default: imt-<name>)
+  --output PATH     Also export image to a file at PATH
+  -h, --help        Show this help
+
+The published image can be used to create new VMs:
+  incus init <alias> <new-name> --vm
+
+Examples:
+  imt vm export --name macos-sonoma
+  imt vm export --name macos-sonoma --alias imt-sonoma-golden
+  imt vm export --name macos-sonoma --output /backups/sonoma.tar.gz
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+    [[ -z "${alias}" ]]   && alias="imt-${vm_name}"
+
+    require_incus
+
+    incus info "${vm_name}" &>/dev/null || die "VM '${vm_name}' not found"
+
+    # Stop if running — Incus requires a stopped VM to publish
+    local was_running=false
+    if incus info "${vm_name}" 2>/dev/null | grep -q "^Status:.*Running"; then
+        was_running=true
+        info "Stopping '${vm_name}' for export ..."
+        incus stop "${vm_name}"
+        local wait=0
+        while incus info "${vm_name}" 2>/dev/null | grep -q "^Status:.*Running" && [[ ${wait} -lt 30 ]]; do
+            sleep 1; wait=$((wait+1))
+        done
+    fi
+
+    info "Publishing '${vm_name}' as image '${alias}' ..."
+    incus publish "${vm_name}" --alias "${alias}"
+    ok "Published: ${alias}"
+
+    if [[ -n "${output}" ]]; then
+        info "Exporting image to file: ${output} ..."
+        incus image export "${alias}" "${output}"
+        ok "Image file: ${output}"
+    fi
+
+    [[ "${was_running}" == true ]] && { info "Restarting '${vm_name}' ..."; incus start "${vm_name}"; }
+
+    info "Create a new VM from this image:"
+    info "  incus init ${alias} <new-name> --vm"
+}
+
+cmd_vm_import() {
+    local source="" vm_name="" alias="" version="${IMT_VERSION:-sonoma}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)   version="$2";  shift 2 ;;
+            --name)      vm_name="$2";  shift 2 ;;
+            --alias|-a)  alias="$2";    shift 2 ;;
+            --from|-f)   source="$2";   shift 2 ;;
+            -h|--help)
+                cat <<EOF
+Usage: imt vm import [OPTIONS]
+
+Import a VM from a published Incus image or a backup file.
+
+Options:
+  --from PATH       Image file to import (required unless --alias given)
+  --alias ALIAS     Use an already-imported image alias
+  --name NAME       Name for the new VM (default: macos-<version>)
+  --version VER     macOS version used to derive default name
+  -h, --help        Show this help
+
+Examples:
+  imt vm import --from /backups/sonoma.tar.gz --name macos-sonoma-2
+  imt vm import --alias imt-macos-sonoma --name macos-sonoma-clone
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}-imported"
+
+    require_incus
+
+    if [[ -n "${source}" ]]; then
+        [[ -f "${source}" ]] || die "File not found: ${source}"
+        [[ -z "${alias}" ]] && alias="imt-imported-$(date +%s)"
+        info "Importing image from '${source}' as '${alias}' ..."
+        incus image import "${source}" --alias "${alias}"
+        ok "Image imported: ${alias}"
+    elif [[ -z "${alias}" ]]; then
+        die "Either --from PATH or --alias ALIAS is required"
+    fi
+
+    info "Creating VM '${vm_name}' from image '${alias}' ..."
+    incus init "${alias}" "${vm_name}" --vm
+    ok "VM created: ${vm_name}"
+    info "Start with: imt vm start --name ${vm_name}"
+}
+
+cmd_vm_fleet() {
+    local subcmd="${1:-help}"
+    shift || true
+
+    case "${subcmd}" in
+        list|ls)    _fleet_list ;;
+        start-all)  _fleet_start_all ;;
+        stop-all)   _fleet_stop_all "$@" ;;
+        backup-all) _fleet_backup_all ;;
+        status)     _fleet_status ;;
+        exec)       _fleet_exec "$@" ;;
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm fleet <subcommand>
+
+Subcommands:
+  list          List all imt-managed VMs with status
+  start-all     Start all stopped VMs
+  stop-all      Stop all running VMs (--force for immediate)
+  backup-all    Backup all VMs
+  status        Overview of all VMs
+  exec CMD      Run a command on all running VMs via incus exec
+
+Examples:
+  imt vm fleet list
+  imt vm fleet start-all
+  imt vm fleet stop-all --force
+  imt vm fleet backup-all
+  imt vm fleet exec -- uname -a
+EOF
+            ;;
+        *) die "Unknown fleet subcommand: ${subcmd}. Run: imt vm fleet help" ;;
+    esac
+}
+
+_fleet_get_vms() {
+    local filter="${1:-all}"
+    local vm_list
+    vm_list=$(incus list --format csv -c n,s,t 2>/dev/null | grep ",virtual-machine" || true)
+    [[ -z "${vm_list}" ]] && return
+    case "${filter}" in
+        running) echo "${vm_list}" | grep ",RUNNING,"  | cut -d',' -f1 ;;
+        stopped) echo "${vm_list}" | grep -v ",RUNNING," | cut -d',' -f1 ;;
+        all)     echo "${vm_list}" | cut -d',' -f1 ;;
+    esac
+}
+
+_fleet_list() {
+    bold "imt VMs"
+    echo ""
+    printf "  %-24s %-10s %-8s %-10s\n" "NAME" "STATUS" "CPU" "MEMORY"
+    printf "  %-24s %-10s %-8s %-10s\n" "----" "------" "---" "------"
+    local vm_list total=0 running=0
+    vm_list=$(incus list --format csv -c n,s,t 2>/dev/null | grep ",virtual-machine" || true)
+    [[ -z "${vm_list}" ]] && { info "  No VMs found"; return; }
+    while IFS=',' read -r name status _type; do
+        total=$((total+1))
+        local cpu mem
+        cpu=$(incus config get "${name}" limits.cpu    2>/dev/null || echo "?")
+        mem=$(incus config get "${name}" limits.memory 2>/dev/null || echo "?")
+        if [[ "${status}" == "RUNNING" ]]; then
+            running=$((running+1))
+            printf "  %-24s \033[32m%-10s\033[0m %-8s %-10s\n" "${name}" "${status}" "${cpu}" "${mem}"
+        else
+            printf "  %-24s %-10s %-8s %-10s\n" "${name}" "${status}" "${cpu}" "${mem}"
+        fi
+    done <<< "${vm_list}"
+    echo ""
+    info "Total: ${running} running / ${total} VMs"
+}
+
+_fleet_start_all() {
+    local vms count=0
+    vms=$(_fleet_get_vms stopped)
+    [[ -z "${vms}" ]] && { info "No stopped VMs"; return; }
+    while IFS= read -r vm; do
+        [[ -n "${vm}" ]] || continue
+        info "Starting: ${vm}"
+        if incus start "${vm}"; then ok "  Started: ${vm}"; else warn "  Failed: ${vm}"; fi
+        count=$((count+1))
+    done <<< "${vms}"
+    ok "Started ${count} VM(s)"
+}
+
+_fleet_stop_all() {
+    local force=false
+    [[ "${1:-}" == "--force" || "${1:-}" == "-f" ]] && force=true
+    local vms count=0
+    vms=$(_fleet_get_vms running)
+    [[ -z "${vms}" ]] && { info "No running VMs"; return; }
+    while IFS= read -r vm; do
+        [[ -n "${vm}" ]] || continue
+        info "Stopping: ${vm}"
+        if [[ "${force}" == true ]]; then
+            if incus stop "${vm}" --force; then ok "  Stopped: ${vm}"; else warn "  Failed: ${vm}"; fi
+        else
+            if incus stop "${vm}"; then ok "  Stopped: ${vm}"; else warn "  Failed: ${vm}"; fi
+        fi
+        count=$((count+1))
+    done <<< "${vms}"
+    ok "Stopped ${count} VM(s)"
+}
+
+_fleet_backup_all() {
+    local vms count=0 failed=0
+    vms=$(_fleet_get_vms all)
+    [[ -z "${vms}" ]] && { info "No VMs to backup"; return; }
+    while IFS= read -r vm; do
+        [[ -n "${vm}" ]] || continue
+        info "Backing up: ${vm}"
+        if cmd_vm_backup --name "${vm}"; then
+            count=$((count+1))
+        else
+            warn "  Failed: ${vm}"
+            failed=$((failed+1))
+        fi
+    done <<< "${vms}"
+    ok "Backed up ${count} VM(s)"
+    [[ ${failed} -gt 0 ]] && warn "${failed} backup(s) failed"
+}
+
+_fleet_status() {
+    _fleet_list
+}
+
+_fleet_exec() {
+    [[ $# -gt 0 ]] || die "Usage: imt vm fleet exec -- <command>"
+    local vms
+    vms=$(_fleet_get_vms running)
+    [[ -z "${vms}" ]] && { info "No running VMs"; return; }
+    while IFS= read -r vm; do
+        [[ -n "${vm}" ]] || continue
+        bold "[${vm}]"
+        incus exec "${vm}" -- "$@" 2>&1 | sed 's/^/  /' || warn "  Command failed on ${vm}"
+        echo ""
+    done <<< "${vms}"
+}
+
+cmd_vm_monitor() {
+    local subcmd="${1:-status}"
+    shift || true
+
+    case "${subcmd}" in
+        status)  _monitor_status "$@" ;;
+        stats)   _monitor_stats  "$@" ;;
+        top)     _monitor_top    "$@" ;;
+        disk)    _monitor_disk   "$@" ;;
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm monitor <subcommand> [--name VM]
+
+Subcommands:
+  status [--name VM]   Detailed VM status with resource info
+  stats  [--name VM]   CPU, memory, disk, and network stats
+  top                  Live overview of all VMs (refreshes every 2s)
+  disk   [--name VM]   Disk usage breakdown
+
+Examples:
+  imt vm monitor status --name macos-sonoma
+  imt vm monitor stats  --name macos-sonoma
+  imt vm monitor top
+  imt vm monitor disk   --name macos-sonoma
+EOF
+            ;;
+        *) die "Unknown monitor subcommand: ${subcmd}. Run: imt vm monitor help" ;;
+    esac
+}
+
+_monitor_parse_name() {
+    local version="${IMT_VERSION:-sonoma}" vm_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --name)    vm_name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+    echo "${vm_name}"
+}
+
+_monitor_status() {
+    local vm_name
+    vm_name=$(_monitor_parse_name "$@")
+    require_incus
+    incus info "${vm_name}" &>/dev/null || die "VM '${vm_name}' not found"
+
+    local info_out status
+    info_out=$(incus info "${vm_name}" 2>/dev/null)
+    status=$(echo "${info_out}" | grep "^Status:" | awk '{print $2}')
+
+    bold "VM: ${vm_name}"
+    echo ""
+    case "${status}" in
+        Running) ok  "  Status: Running" ;;
+        Stopped) info "  Status: Stopped" ;;
+        *)       info "  Status: ${status}" ;;
+    esac
+
+    local arch created profiles
+    arch=$(echo "${info_out}"     | grep "^Architecture:" | sed 's/^Architecture:[[:space:]]*//')
+    created=$(echo "${info_out}"  | grep "^Created:"      | sed 's/^Created:[[:space:]]*//')
+    profiles=$(echo "${info_out}" | grep "^Profiles:"     | sed 's/^Profiles:[[:space:]]*//')
+    echo "  Architecture : ${arch}"
+    echo "  Created      : ${created}"
+    echo "  Profiles     : ${profiles}"
+
+    local cpu mem
+    cpu=$(incus config get "${vm_name}" limits.cpu    2>/dev/null || echo "?")
+    mem=$(incus config get "${vm_name}" limits.memory 2>/dev/null || echo "?")
+    echo "  CPU limit    : ${cpu}"
+    echo "  Memory limit : ${mem}"
+
+    if [[ "${status}" == "Running" ]]; then
+        echo ""
+        _monitor_stats "$@"
+    fi
+}
+
+_monitor_stats() {
+    local vm_name
+    vm_name=$(_monitor_parse_name "$@")
+    require_incus
+    incus info "${vm_name}" &>/dev/null || die "VM '${vm_name}' not found"
+
+    local info_out status
+    info_out=$(incus info "${vm_name}" 2>/dev/null)
+    status=$(echo "${info_out}" | grep "^Status:" | awk '{print $2}')
+    [[ "${status}" != "Running" ]] && { info "'${vm_name}' is not running"; return 0; }
+
+    bold "Resources: ${vm_name}"
+    echo ""
+
+    local cpu mem_limit mem_usage net_state ip
+    cpu=$(incus config get "${vm_name}" limits.cpu    2>/dev/null || echo "?")
+    mem_limit=$(incus config get "${vm_name}" limits.memory 2>/dev/null || echo "?")
+    mem_usage=$(echo "${info_out}" | grep "Memory usage:" | awk '{print $NF}' || echo "")
+    echo "  CPU    : ${cpu} vCPU(s)"
+    if [[ -n "${mem_usage}" ]]; then
+        echo "  Memory : ${mem_usage} / ${mem_limit}"
+    else
+        echo "  Memory : limit ${mem_limit}"
+    fi
+
+    net_state=$(echo "${info_out}" | grep -A20 "^Network usage:" || true)
+    if [[ -n "${net_state}" ]]; then
+        echo ""
+        info "Network:"
+        echo "${net_state}" | grep -E "Bytes|Packets" | sed 's/^/  /'
+    fi
+
+    ip=$(incus list "${vm_name}" --format csv -c 4 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+    [[ -n "${ip}" ]] && echo "" && echo "  IP: ${ip}"
+}
+
+_monitor_top() {
+    bold "imt VM Monitor"
+    echo ""
+    printf "  %-24s %-10s %-6s %-10s %-15s\n" "NAME" "STATUS" "CPU" "MEMORY" "IP"
+    printf "  %-24s %-10s %-6s %-10s %-15s\n" "----" "------" "---" "------" "--"
+
+    local vm_list
+    vm_list=$(incus list --format csv -c n,s,t 2>/dev/null | grep ",virtual-machine" || true)
+    [[ -z "${vm_list}" ]] && { info "  No VMs found"; return; }
+
+    local running=0 total=0
+    while IFS=',' read -r name status _type; do
+        total=$((total+1))
+        local cpu mem ip
+        cpu=$(incus config get "${name}" limits.cpu    2>/dev/null || echo "?")
+        mem=$(incus config get "${name}" limits.memory 2>/dev/null || echo "?")
+        if [[ "${status}" == "RUNNING" ]]; then
+            running=$((running+1))
+            ip=$(incus list "${name}" --format csv -c 4 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "-")
+            printf "  %-24s \033[32m%-10s\033[0m %-6s %-10s %-15s\n" "${name}" "${status}" "${cpu}" "${mem}" "${ip}"
+        else
+            printf "  %-24s %-10s %-6s %-10s %-15s\n" "${name}" "${status}" "${cpu}" "${mem}" "-"
+        fi
+    done <<< "${vm_list}"
+    echo ""
+    info "VMs: ${running} running / ${total} total"
+}
+
+_monitor_disk() {
+    local vm_name
+    vm_name=$(_monitor_parse_name "$@")
+    require_incus
+    incus info "${vm_name}" &>/dev/null || die "VM '${vm_name}' not found"
+
+    bold "Disk: ${vm_name}"
+    echo ""
+    local disk_size
+    disk_size=$(incus config device get "${vm_name}" root size 2>/dev/null || echo "?")
+    echo "  Root disk allocated: ${disk_size}"
+
+    # Custom volumes
+    for suffix in disk opencore installer; do
+        local vol="${vm_name}-${suffix}"
+        if incus storage volume show "${IMT_STORAGE_POOL:-default}" "${vol}" &>/dev/null 2>&1; then
+            local vol_size
+            vol_size=$(incus storage volume get "${IMT_STORAGE_POOL:-default}" "${vol}" size 2>/dev/null || echo "?")
+            echo "  Volume ${vol}: ${vol_size}"
+        fi
+    done
 }
 
 cmd_vm_backup() {

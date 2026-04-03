@@ -35,7 +35,11 @@ The dispatch table at the bottom routes `imt <command>` to the right function.
 ```
 imt image  firmware | opencore | fetch | build
 imt vm     create | start | stop | status | console | shell |
-           snapshot | backup | restore | assemble | delete | list
+           snapshot create | list | restore | delete |
+           export | import |
+           fleet list | start-all | stop-all | backup-all | exec |
+           monitor status | stats | top | disk |
+           backup | restore | assemble | delete | list
 imt doctor
 imt config show | init | edit
 imt version
