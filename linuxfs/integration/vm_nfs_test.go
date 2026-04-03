@@ -139,10 +139,14 @@ func TestVMBootMountNFS(t *testing.T) {
 	}
 	t.Logf("Share URL: %s", shareURL)
 
-	// ── 5. Wait for NFS port on host ─────────────────────────────────────────
-	t.Logf("Waiting for NFS port %d on host", testNFSPort)
+	// ── 5. Wait for NFS ports on host ────────────────────────────────────────
+	t.Logf("Waiting for NFS data port %d on host", testNFSPort)
 	if err := waitForTCPPort("127.0.0.1", testNFSPort, 30*time.Second); err != nil {
-		t.Fatalf("NFS port not reachable: %v", err)
+		t.Fatalf("NFS data port not reachable: %v", err)
+	}
+	t.Logf("Waiting for mountd port %d on host", testMountdPort)
+	if err := waitForTCPPort("127.0.0.1", testMountdPort, 30*time.Second); err != nil {
+		t.Fatalf("mountd port not reachable: %v", err)
 	}
 
 	// ── 6. Mount NFS on host and verify sentinel ──────────────────────────────
@@ -155,7 +159,9 @@ func TestVMBootMountNFS(t *testing.T) {
 	})
 
 	// NFS v3 over TCP; fsid=0 means the export root is /mnt/linuxfs inside VM.
+	// -v gives verbose output on failure for easier debugging.
 	mountArgs := []string{
+		"-v",
 		"-t", "nfs",
 		"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,tcp,nolock,soft,timeo=30", testNFSPort, testMountdPort),
 		"127.0.0.1:/", nfsMnt,
