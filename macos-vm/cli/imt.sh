@@ -45,6 +45,7 @@ Commands:
   cloud-sync  Sync VM backups to cloud storage via rclone
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
+  tui             Launch interactive terminal UI (requires dialog or whiptail)
   profiles        Manage Incus profiles (list, install, diff, apply)
   setup-rootless  Configure the system for rootless VM operation via incus-user
   update          Check for and install imt updates
@@ -2454,6 +2455,23 @@ EOF
     esac
 }
 
+# ── tui ──────────────────────────────────────────────────────────────────────
+
+cmd_tui() {
+    # Interactive terminal UI for imt.
+    # Requires dialog or whiptail.
+
+    local _imt_script_dir
+    _imt_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local tui_script="${_imt_script_dir}/../tui/imt-tui.sh"
+
+    if [[ -x "${tui_script}" ]]; then
+        exec "${tui_script}" "$@"
+    else
+        die "TUI script not found at ${tui_script}. Run: imt tui --help"
+    fi
+}
+
 # ── setup-rootless ───────────────────────────────────────────────────────────
 
 cmd_setup_rootless() {
@@ -3204,6 +3222,7 @@ main() {
         cloud-sync)     cmd_cloud_sync "$@" ;;
         demo)           cmd_demo       "$@" ;;
         winesapos)      cmd_winesapos  "$@" ;;
+        tui)            cmd_tui        "$@" ;;
         profiles)       cmd_profiles   "$@" ;;
         setup-rootless) cmd_setup_rootless "$@" ;;
         update)         cmd_update     "$@" ;;
