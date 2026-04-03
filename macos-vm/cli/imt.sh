@@ -211,17 +211,18 @@ _vm_parse_name() {
 cmd_vm_create() {
     local ram="${IMT_RAM:-4GiB}"
     local cpus="${IMT_CPUS:-4}"
-    local disk="${IMT_DISK:-128GiB}"
     local version="${IMT_VERSION:-sonoma}"
     local name=""
 
+    # --disk is intentionally absent: disk size is baked into the QCOW2
+    # image at build time (imt image build --size). Incus has no
+    # limits.disk config key; size is set by the storage volume itself.
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --version) version="$2"; shift 2 ;;
             --name)    name="$2";    shift 2 ;;
             --ram)     ram="$2";     shift 2 ;;
             --cpus)    cpus="$2";    shift 2 ;;
-            --disk)    disk="$2";    shift 2 ;;
             *) die "Unknown option: $1" ;;
         esac
     done
@@ -294,7 +295,6 @@ cmd_vm_create() {
         --profile macos-kvm \
         --config limits.cpu="$cpus" \
         --config limits.memory="$ram" \
-        --config limits.disk="$disk" \
         --config security.secureboot=false \
         "$name"
 
@@ -654,10 +654,11 @@ cmd_vm_delete() {
 
 cmd_vm_list() {
     require_incus
-    # Filter Incus VM list to only show instances using the macos-kvm profile
-    incus list --format table | grep -E "^[|+]" | \
-        awk 'NR==1 || /macos-kvm/' || \
-        incus list --format table
+    # --columns nstL adds a PROFILES column so we can filter on macos-kvm.
+    # The default table format has no PROFILES column, so grep/awk on the
+    # profile name would never match any data row.
+    incus list --format table --columns nstL | \
+        awk 'NR<=2 || /macos-kvm/'
 }
 
 # ── doctor command ────────────────────────────────────────────────────────────
