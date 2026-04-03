@@ -177,6 +177,7 @@ cmd_vm() {
         assemble) cmd_vm_assemble "$@" ;;
         delete)   cmd_vm_delete  "$@" ;;
         list)     cmd_vm_list    "$@" ;;
+        upgrade)  cmd_vm_upgrade "$@" ;;
         help|--help|-h)
             cat <<EOF
 Usage: imt vm <subcommand> [options]
@@ -202,6 +203,7 @@ Subcommands:
   assemble  Create/update VMs from a declarative YAML file
   delete    Delete the VM and its installer storage volume
   list      List all imt-managed VMs
+  upgrade   Run macOS Software Update inside a running VM
 
 Common options:
   --name NAME       Incus instance name (default: macos-<version>)
@@ -1525,6 +1527,100 @@ cmd_vm_list() {
     # profile name would never match any data row.
     incus list --format table --columns nstL | \
         awk 'NR<=2 || /macos-kvm/'
+}
+
+# ── vm upgrade ───────────────────────────────────────────────────────────────
+
+cmd_vm_upgrade() {
+    # Run macOS Software Update inside a running VM.
+    #
+    # Usage: imt vm upgrade [--name NAME] [--version VER] [--list] [--restart]
+    #
+    # Options:
+    #   --name NAME      Incus instance name (default: macos-<version>)
+    #   --version VER    macOS version used to derive default name
+    #   --list           List available updates without installing
+    #   --restart        Restart the VM after updates are applied
+    #   --no-snapshot    Skip the pre-upgrade snapshot
+    #   --help           Show this help
+
+    local name="" version="${IMT_VERSION:-sonoma}" list_only=0 do_restart=0 no_snapshot=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name)      name="$2";    shift 2 ;;
+            --version)   version="$2"; shift 2 ;;
+            --list)      list_only=1;  shift ;;
+            --restart)   do_restart=1; shift ;;
+            --no-snapshot) no_snapshot=1; shift ;;
+            --help|-h)
+                cat <<EOF
+imt vm upgrade — run macOS Software Update inside a running VM
+
+Usage: imt vm upgrade [options]
+
+Options:
+  --name NAME      Incus instance name (default: macos-<version>)
+  --version VER    macOS version used to derive default name (default: sonoma)
+  --list           List available updates without installing
+  --restart        Restart the VM after updates are applied
+  --no-snapshot    Skip the pre-upgrade snapshot (not recommended)
+
+Examples:
+  imt vm upgrade
+  imt vm upgrade --name macos-ventura --list
+  imt vm upgrade --name macos-sonoma --restart
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1. Run: imt vm upgrade --help" ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && name="macos-${version}"
+    require_incus
+
+    # Verify the VM exists and is running
+    if ! incus info "$name" &>/dev/null; then
+        die "VM '$name' does not exist"
+    fi
+    local state
+    state=$(incus list --format csv -c s "$name" 2>/dev/null | head -1)
+    if [[ "$state" != "RUNNING" ]]; then
+        die "VM '$name' is not running. Start it first: imt vm start --name $name"
+    fi
+
+    if [[ "$list_only" -eq 1 ]]; then
+        info "Checking for available updates in '$name'..."
+        incus exec "$name" -- /bin/bash -c \
+            'softwareupdate --list 2>&1' \
+            || die "softwareupdate --list failed (is macOS booted?)"
+        return 0
+    fi
+
+    # Pre-upgrade snapshot
+    if [[ "$no_snapshot" -eq 0 ]]; then
+        local snap_name
+        snap_name="pre-upgrade-$(date +%Y%m%d-%H%M%S)"
+        info "Creating pre-upgrade snapshot: $snap_name"
+        incus snapshot create "$name" "$snap_name" \
+            && ok "Snapshot created: $snap_name" \
+            || warn "Snapshot failed — continuing without it"
+    fi
+
+    info "Running Software Update in '$name' (this may take a while)..."
+    incus exec "$name" -- /bin/bash -c \
+        'softwareupdate --install --all --verbose 2>&1' \
+        || die "softwareupdate failed"
+
+    ok "Software Update complete in '$name'"
+
+    if [[ "$do_restart" -eq 1 ]]; then
+        info "Restarting '$name'..."
+        incus exec "$name" -- /bin/bash -c 'shutdown -r now' 2>/dev/null || true
+        ok "Restart initiated"
+    else
+        info "Restart may be required. Run: imt vm upgrade --name $name --restart"
+    fi
 }
 
 # ── doctor command ────────────────────────────────────────────────────────────
