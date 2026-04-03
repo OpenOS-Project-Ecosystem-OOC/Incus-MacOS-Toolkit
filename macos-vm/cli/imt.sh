@@ -43,6 +43,8 @@ Commands:
   image       Manage macOS disk images (fetch, build)
   vm          Manage macOS VMs in Incus (create, start, stop, backup, restore, ...)
   cloud-sync  Sync VM backups to cloud storage via rclone
+  demo        Manage a local incus-demo-server instance
+  winesapos   Fetch, import, and launch winesapOS gaming VMs
   update      Check for and install imt updates
   doctor      Check prerequisites
   config      Show or initialise configuration
@@ -2342,6 +2344,284 @@ EOF
     esac
 }
 
+# ── demo ─────────────────────────────────────────────────────────────────────
+
+cmd_demo() {
+    # Manage a local incus-demo-server instance.
+    # incus-demo-server: https://github.com/lxc/incus-demo-server
+    local subcmd="${1:-help}"; shift || true
+
+    local _demo_dir="${IMT_DEMO_DIR:-${HOME}/.local/share/imt/demo-server}"
+    local _demo_bin="${_demo_dir}/incus-demo-server"
+    local _demo_cfg="${_demo_dir}/config.yaml"
+    local _demo_pid="${_demo_dir}/demo-server.pid"
+    local _demo_log="${_demo_dir}/demo-server.log"
+    local _demo_addr="${IMT_DEMO_ADDR:-[::]:8080}"
+    local _demo_port; _demo_port="$(printf '%s' "${_demo_addr}" | sed 's/.*://')"
+    local _demo_url="http://localhost:${_demo_port}"
+    local _demo_image="${IMT_DEMO_IMAGE:-ubuntu/24.04}"
+    local _demo_expiry="${IMT_DEMO_EXPIRY:-3600}"
+    local _demo_total="${IMT_DEMO_TOTAL:-10}"
+    local _demo_ip="${IMT_DEMO_IP_LIMIT:-2}"
+    local _demo_cpu="${IMT_DEMO_CPU:-1}"
+    local _demo_mem="${IMT_DEMO_MEMORY:-512MiB}"
+    local _demo_disk="${IMT_DEMO_DISK:-5GiB}"
+    local _demo_pre="${IMT_DEMO_PREALLOCATE:-2}"
+    local _demo_mod="github.com/lxc/incus-demo-server/cmd/incus-demo-server@latest"
+
+    _demo_running() { [ -f "${_demo_pid}" ] && kill -0 "$(cat "${_demo_pid}")" 2>/dev/null; }
+
+    _demo_write_config() {
+        mkdir -p "${_demo_dir}"
+        cat > "${_demo_cfg}" <<EOF
+server:
+  api:
+    address: "${_demo_addr}"
+  limits:
+    total: ${_demo_total}
+    ip: ${_demo_ip}
+  terms: |
+    This is a local imt demo server.
+    Instances expire after ${_demo_expiry} seconds.
+incus:
+  instance:
+    allocate:
+      count: ${_demo_pre}
+    expiry: ${_demo_expiry}
+    source:
+      image: "${_demo_image}"
+      type: "container"
+    profiles:
+      - default
+    limits:
+      cpu: ${_demo_cpu}
+      disk: ${_demo_disk}
+      memory: ${_demo_mem}
+  session:
+    command: ["bash"]
+    expiry: ${_demo_expiry}
+    console_only: true
+EOF
+    }
+
+    case "${subcmd}" in
+        install)
+            command -v go >/dev/null 2>&1 || die "go is required. See https://go.dev/dl/"
+            mkdir -p "${_demo_dir}"
+            info "Installing incus-demo-server..."
+            GOBIN="${_demo_dir}" go install "${_demo_mod}"
+            ok "Installed: ${_demo_bin}"
+            ;;
+        config)
+            mkdir -p "${_demo_dir}"
+            [ -f "${_demo_cfg}" ] || { _demo_write_config; ok "Config written: ${_demo_cfg}"; }
+            if [[ "${1:-}" == "--edit" || "${1:-}" == "-e" ]]; then
+                "${EDITOR:-vi}" "${_demo_cfg}"
+            else
+                cat "${_demo_cfg}"
+            fi
+            ;;
+        start)
+            [ -f "${_demo_bin}" ] || die "Not installed. Run: imt demo install"
+            [ -f "${_demo_cfg}" ] || { _demo_write_config; info "Generated config: ${_demo_cfg}"; }
+            _demo_running && { info "Already running (PID $(cat "${_demo_pid}"))"; return 0; }
+            mkdir -p "${_demo_dir}"
+            ( cd "${_demo_dir}" && "${_demo_bin}" >> "${_demo_log}" 2>&1 & echo $! > "${_demo_pid}" )
+            sleep 1
+            if _demo_running; then
+                ok "Demo server started (PID $(cat "${_demo_pid}")) — ${_demo_url}"
+            else
+                die "Failed to start. Check: imt demo logs"
+            fi
+            ;;
+        stop)
+            _demo_running || { info "Not running"; return 0; }
+            kill "$(cat "${_demo_pid}")"; rm -f "${_demo_pid}"
+            ok "Demo server stopped"
+            ;;
+        restart)
+            cmd_demo stop; sleep 1; cmd_demo start
+            ;;
+        status)
+            if _demo_running; then
+                ok "Running (PID $(cat "${_demo_pid}")) — ${_demo_url}"
+            else
+                info "Stopped"
+            fi
+            ;;
+        logs)
+            [ -f "${_demo_log}" ] || die "No log file: ${_demo_log}"
+            if [[ "${1:-}" == "--follow" || "${1:-}" == "-f" ]]; then
+                tail -f "${_demo_log}"
+            else
+                cat "${_demo_log}"
+            fi
+            ;;
+        url)  printf '%s\n' "${_demo_url}" ;;
+        test)
+            command -v curl >/dev/null 2>&1 || die "curl is required"
+            curl --silent --fail --max-time 5 "${_demo_url}/1.0" >/dev/null \
+                || die "Server not responding at ${_demo_url}/1.0 — run: imt demo start"
+            ok "${_demo_url}/1.0 — OK"
+            curl --silent --fail --max-time 5 "${_demo_url}/1.0/terms" >/dev/null \
+                && ok "${_demo_url}/1.0/terms — OK"
+            ;;
+        help|--help|-h)
+            cat <<EOF
+imt demo — manage a local incus-demo-server instance
+  https://github.com/lxc/incus-demo-server
+
+Usage: imt demo <subcommand> [options]
+
+Subcommands:
+  install          Install the demo server binary (requires Go)
+  config [--edit]  Show or edit the generated config.yaml
+  start            Start the demo server in the background
+  stop             Stop the running demo server
+  restart          Stop then start
+  status           Show whether the server is running
+  logs [--follow]  Show server logs
+  url              Print the API base URL
+  test             Smoke-test the running server via curl
+
+Environment overrides:
+  IMT_DEMO_DIR, IMT_DEMO_ADDR, IMT_DEMO_EXPIRY, IMT_DEMO_TOTAL,
+  IMT_DEMO_IP_LIMIT, IMT_DEMO_IMAGE, IMT_DEMO_CPU, IMT_DEMO_MEMORY,
+  IMT_DEMO_DISK, IMT_DEMO_PREALLOCATE
+EOF
+            ;;
+        *) die "Unknown demo subcommand: ${subcmd}. Run: imt demo help" ;;
+    esac
+}
+
+# ── winesapos ─────────────────────────────────────────────────────────────────
+
+cmd_winesapos() {
+    # Fetch, import, and launch winesapOS gaming VMs.
+    # winesapOS: https://github.com/winesapOS/winesapOS
+    local subcmd="${1:-help}"; shift || true
+
+    local _ws_version="${IMT_WINESAPOS_VERSION:-4.5.0}"
+    local _ws_edition="${IMT_WINESAPOS_EDITION:-minimal}"
+    local _ws_dir="${IMT_WINESAPOS_DIR:-${HOME}/.local/share/imt/winesapos}"
+    local _ws_cpus="${IMT_WINESAPOS_CPUS:-4}"
+    local _ws_mem="${IMT_WINESAPOS_MEMORY:-8192}"
+    local _ws_disk="${IMT_WINESAPOS_DISK:-64GiB}"
+    local _ws_base="https://github.com/winesapOS/winesapOS/releases/download"
+
+    _ws_filename() { printf 'winesapos-%s-%s.img.zst' "$1" "$2"; }
+    _ws_alias()    { printf 'winesapos/%s/%s' "$1" "$2"; }
+    _ws_img_exists() {
+        incus image list --format csv 2>/dev/null | grep -q "^$(_ws_alias "$1" "$2"),"
+    }
+
+    case "${subcmd}" in
+        fetch)
+            local version="${_ws_version}" edition="${_ws_edition}"
+            while [[ "$#" -gt 0 ]]; do
+                case "$1" in
+                    --edition|-e) edition="$2"; shift 2 ;;
+                    --version|-v) version="$2"; shift 2 ;;
+                    *) version="$1"; shift ;;
+                esac
+            done
+            command -v curl >/dev/null 2>&1 || die "curl is required"
+            command -v zstd >/dev/null 2>&1 || die "zstd is required: apt install zstd"
+            local fname url dest
+            fname="$(_ws_filename "${version}" "${edition}")"
+            url="${_ws_base}/${version}/${fname}"
+            dest="${_ws_dir}/${fname}"
+            mkdir -p "${_ws_dir}"
+            if [ -f "${dest%.zst}" ]; then
+                info "Already fetched: ${dest%.zst}"; return 0
+            fi
+            [ -f "${dest}" ] || { info "Downloading ${fname}..."; curl -L --progress-bar --fail -o "${dest}" "${url}"; }
+            info "Decompressing..."
+            zstd --decompress --rm "${dest}" -o "${dest%.zst}"
+            ok "Image ready: ${dest%.zst}"
+            ;;
+        import)
+            local version="${_ws_version}" edition="${_ws_edition}"
+            while [[ "$#" -gt 0 ]]; do
+                case "$1" in
+                    --edition|-e) edition="$2"; shift 2 ;;
+                    --version|-v) version="$2"; shift 2 ;;
+                    *) version="$1"; shift ;;
+                esac
+            done
+            command -v qemu-img >/dev/null 2>&1 || die "qemu-img is required: apt install qemu-utils"
+            local img alias qcow2
+            img="${_ws_dir}/$(_ws_filename "${version}" "${edition}" | sed 's/\.zst$//')"
+            alias="$(_ws_alias "${version}" "${edition}")"
+            qcow2="${img%.img}.qcow2"
+            [ -f "${img}" ] || die "Image not found: ${img}. Run: imt winesapos fetch ${version} --edition ${edition}"
+            _ws_img_exists "${version}" "${edition}" && { info "Already imported: ${alias}"; return 0; }
+            [ -f "${qcow2}" ] || { info "Converting to qcow2..."; qemu-img convert -f raw -O qcow2 -p "${img}" "${qcow2}"; }
+            incus image import "${qcow2}" --alias "${alias}" --type virtual-machine
+            ok "Imported: ${alias}"
+            ;;
+        launch)
+            [[ "$#" -ge 1 ]] || die "Usage: imt winesapos launch NAME [options]"
+            local name="$1"; shift
+            local version="${_ws_version}" edition="${_ws_edition}"
+            local cpus="${_ws_cpus}" memory="${_ws_mem}" disk="${_ws_disk}"
+            while [[ "$#" -gt 0 ]]; do
+                case "$1" in
+                    --version|-v) version="$2"; shift 2 ;;
+                    --edition|-e) edition="$2"; shift 2 ;;
+                    --cpus|-c)    cpus="$2";    shift 2 ;;
+                    --memory|-m)  memory="$2";  shift 2 ;;
+                    --disk|-d)    disk="$2";    shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            local alias; alias="$(_ws_alias "${version}" "${edition}")"
+            if ! _ws_img_exists "${version}" "${edition}"; then
+                info "Image '${alias}' not found — fetching and importing..."
+                cmd_winesapos fetch "${version}" --edition "${edition}"
+                cmd_winesapos import "${version}" --edition "${edition}"
+            fi
+            info "Launching winesapOS VM: ${name} (${alias}, ${cpus} CPUs, ${memory} MiB, ${disk})"
+            incus launch "${alias}" "${name}" --vm \
+                --config limits.cpu="${cpus}" \
+                --config limits.memory="${memory}MiB" \
+                --device root,size="${disk}"
+            ok "VM launched: ${name}"
+            ;;
+        list)
+            incus list --format table | grep -i "winesapos" \
+                || info "No winesapOS VMs found. Launch with: imt winesapos launch NAME"
+            ;;
+        versions)
+            command -v curl >/dev/null 2>&1 || die "curl is required"
+            info "winesapOS releases:"
+            curl --silent --fail \
+                "https://api.github.com/repos/winesapOS/winesapOS/releases?per_page=10" \
+                | grep '"tag_name"' | sed 's/.*"tag_name": "\(.*\)".*/  \1/'
+            ;;
+        help|--help|-h)
+            cat <<EOF
+imt winesapos — fetch, import, and launch winesapOS gaming VMs
+  https://github.com/winesapOS/winesapOS
+
+Usage: imt winesapos <subcommand> [options]
+
+Subcommands:
+  fetch   [VERSION] [--edition minimal|performance|secure]
+  import  [VERSION] [--edition ...]
+  launch  NAME [--version V] [--edition E] [--cpus N] [--memory MiB] [--disk SIZE]
+  list    List winesapOS VMs
+  versions  List available releases
+
+Environment overrides:
+  IMT_WINESAPOS_VERSION, IMT_WINESAPOS_EDITION, IMT_WINESAPOS_DIR,
+  IMT_WINESAPOS_CPUS, IMT_WINESAPOS_MEMORY, IMT_WINESAPOS_DISK
+EOF
+            ;;
+        *) die "Unknown winesapos subcommand: ${subcmd}. Run: imt winesapos help" ;;
+    esac
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 main() {
@@ -2350,6 +2630,8 @@ main() {
         image)          cmd_image      "$@" ;;
         vm)             cmd_vm         "$@" ;;
         cloud-sync)     cmd_cloud_sync "$@" ;;
+        demo)           cmd_demo       "$@" ;;
+        winesapos)      cmd_winesapos  "$@" ;;
         update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
