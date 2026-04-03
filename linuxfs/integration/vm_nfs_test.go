@@ -51,6 +51,14 @@ const (
 
 	// testSentinel is written inside the ext4 image and verified via NFS.
 	testSentinel = "linuxfs-integration-ok\n"
+
+	// nfsMountRetries is the number of times to retry the NFS mount before
+	// failing. The NFS server inside the VM may take a few seconds to become
+	// fully ready after the ports become reachable.
+	nfsMountRetries = 5
+
+	// nfsMountRetryDelay is the wait between NFS mount retry attempts.
+	nfsMountRetryDelay = 5 * time.Second
 )
 
 // TestVMBootMountNFS:
@@ -140,12 +148,16 @@ func TestVMBootMountNFS(t *testing.T) {
 	t.Logf("Share URL: %s", shareURL)
 
 	// ── 5. Wait for NFS ports on host ────────────────────────────────────────
+	// Use a longer timeout (60s) to allow the NFS server inside the VM to
+	// fully initialise after mount.Setup returns. The in-VM WaitForPort check
+	// only confirms the port is open inside the VM; the QEMU hostfwd may still
+	// be establishing when we reach this point.
 	t.Logf("Waiting for NFS data port %d on host", testNFSPort)
-	if err := waitForTCPPort("127.0.0.1", testNFSPort, 30*time.Second); err != nil {
+	if err := waitForTCPPort("127.0.0.1", testNFSPort, 60*time.Second); err != nil {
 		t.Fatalf("NFS data port not reachable: %v", err)
 	}
 	t.Logf("Waiting for mountd port %d on host", testMountdPort)
-	if err := waitForTCPPort("127.0.0.1", testMountdPort, 30*time.Second); err != nil {
+	if err := waitForTCPPort("127.0.0.1", testMountdPort, 60*time.Second); err != nil {
 		t.Fatalf("mountd port not reachable: %v", err)
 	}
 
@@ -166,8 +178,23 @@ func TestVMBootMountNFS(t *testing.T) {
 		"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,tcp,nolock,soft,timeo=30", testNFSPort, testMountdPort),
 		"127.0.0.1:/", nfsMnt,
 	}
-	if out, err := exec.CommandContext(ctx, "mount", mountArgs...).CombinedOutput(); err != nil {
-		t.Fatalf("mount NFS: %v\n%s", err, out)
+
+	// Retry the mount: the NFS server may need a few extra seconds to export
+	// after the ports become reachable (exportfs -ra runs asynchronously).
+	var mountErr error
+	for attempt := 1; attempt <= nfsMountRetries; attempt++ {
+		var out []byte
+		out, mountErr = exec.CommandContext(ctx, "mount", mountArgs...).CombinedOutput()
+		if mountErr == nil {
+			break
+		}
+		t.Logf("mount attempt %d/%d failed: %v\n%s", attempt, nfsMountRetries, mountErr, out)
+		if attempt < nfsMountRetries {
+			time.Sleep(nfsMountRetryDelay)
+		}
+	}
+	if mountErr != nil {
+		t.Fatalf("mount NFS: %v", mountErr)
 	}
 
 	got, err := os.ReadFile(filepath.Join(nfsMnt, "sentinel.txt"))
