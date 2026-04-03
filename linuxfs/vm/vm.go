@@ -238,7 +238,9 @@ func (v *VM) startQEMU() error {
 	if err := v.waitForSSH(300 * time.Second); err != nil {
 		return err
 	}
-	return v.waitForCloudInit(300 * time.Second)
+	// Allow up to 10 minutes for cloud-init runcmd to complete.
+	// apt-get update + package install on a cold CI runner can take 3-4 min.
+	return v.waitForCloudInit(600 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.
