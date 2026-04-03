@@ -17,6 +17,9 @@ type MountRecord struct {
 	Backend    string `json:"backend"`
 	VMPid      int    `json:"vm_pid"`
 	SSHPort    uint16 `json:"ssh_port"`
+	// VMUser is the SSH login user inside the VM (provider.DefaultUser()).
+	// Needed by runUnmount to SSH in and run the in-VM teardown script.
+	VMUser string `json:"vm_user,omitempty"`
 }
 
 func stateFile() (string, error) {

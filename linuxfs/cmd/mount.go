@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -222,6 +223,7 @@ Flags:
 		Backend:    string(effectiveBackend),
 		VMPid:      v.Pid(),
 		SSHPort:    v.SSHPort,
+		VMUser:     provider.DefaultUser(),
 	})
 	if err := saveMounts(records); err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: could not save mount state: %v\n", err)
@@ -342,6 +344,19 @@ Flags:
 		}
 	}
 
+	// Run in-VM teardown before killing the VM: stop the share server and
+	// unmount the filesystem so dirty page-cache data is flushed and the
+	// journal is closed cleanly. Without this, killing QEMU with a rw mount
+	// active leaves the filesystem in an unclean state.
+	if rec != nil && rec.SSHPort > 0 && rec.VMUser != "" {
+		fmt.Println("Running in-VM teardown ...")
+		script := mount.InVMTeardownScript(mount.Backend(rec.Backend))
+		keyPath := vmKeyPath(flagDataDir)
+		if out, err := vm.RunScriptOnPort(rec.SSHPort, rec.VMUser, keyPath, script); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: in-VM teardown: %v\nOutput:\n%s\n", err, out)
+		}
+	}
+
 	// Stop the VM process.
 	if !*noStopVM && rec != nil && rec.VMPid > 0 {
 		fmt.Printf("Stopping VM (pid %d) ...\n", rec.VMPid)
@@ -362,6 +377,24 @@ Flags:
 	}
 
 	fmt.Println("Done.")
+}
+
+// vmKeyPath returns the path to the generated VM SSH private key.
+// Returns "" if the key does not exist (ssh will fall back to the agent).
+func vmKeyPath(dataDir string) string {
+	d := dataDir
+	if d == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			return ""
+		}
+		d = filepath.Join(base, "linuxfs")
+	}
+	p := filepath.Join(d, "vm_id_ed25519")
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 // stopProcess sends SIGTERM to pid, waits up to 5 s, then SIGKILL.

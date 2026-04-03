@@ -13,10 +13,10 @@ type FedoraProvider struct{}
 func (FedoraProvider) Name() string { return "fedora" }
 
 func (FedoraProvider) ImageURL(arch Arch) string {
-	// Fedora 42+ uses "Generic" instead of "Cloud-Base" in the filename.
+	// Fedora 42+ filename format: Fedora-Cloud-Base-Generic-<ver>-1.1.<arch>.qcow2
 	// https://fedoraproject.org/cloud/download
 	return fmt.Sprintf(
-		"https://download.fedoraproject.org/pub/fedora/linux/releases/%s/Cloud/%s/images/Fedora-Cloud-Generic-%s-1.1.%s.qcow2",
+		"https://download.fedoraproject.org/pub/fedora/linux/releases/%s/Cloud/%s/images/Fedora-Cloud-Base-Generic-%s-1.1.%s.qcow2",
 		fedoraVersion, arch.FedoraString(), fedoraVersion, arch.FedoraString(),
 	)
 }

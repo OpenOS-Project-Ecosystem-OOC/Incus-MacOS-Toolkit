@@ -408,7 +408,9 @@ fi
 if command -v rc-service >/dev/null 2>&1; then
     rc-service samba start 2>/dev/null || rc-service samba restart 2>/dev/null || true
 elif command -v systemctl >/dev/null 2>&1; then
-    systemctl enable --now smbd 2>/dev/null || true
+    # Debian/Ubuntu use smbd; Fedora/RHEL use smb.
+    systemctl enable --now smbd 2>/dev/null || \
+        systemctl enable --now smb 2>/dev/null || true
 fi
 `, shareName, shareName, vmMountPoint, roFlag)
 	return b.String()
@@ -524,6 +526,13 @@ func InVMUnmountScript(opts MountOptions) string {
 	})
 }
 
+// InVMTeardownScript returns a script that stops the share server for the
+// given backend and unmounts /mnt/linuxfs. Used by the unmount subcommand
+// where only the backend name is known (LUKS/LVM state is not persisted).
+func InVMTeardownScript(backend Backend) string {
+	return buildTeardownScript(MountOptions{Backend: backend})
+}
+
 // buildTeardownScript returns the shell script that stops the share server
 // and unmounts the filesystem inside the VM.
 func buildTeardownScript(opts MountOptions) string {
@@ -546,7 +555,8 @@ exportfs -ua 2>/dev/null || true
 if command -v rc-service >/dev/null 2>&1; then
     rc-service samba stop 2>/dev/null || true
 elif command -v systemctl >/dev/null 2>&1; then
-    systemctl stop smbd 2>/dev/null || true
+    # Debian/Ubuntu use smbd; Fedora/RHEL use smb.
+    systemctl stop smbd 2>/dev/null || systemctl stop smb 2>/dev/null || true
 fi
 `)
 	case BackendAFP:

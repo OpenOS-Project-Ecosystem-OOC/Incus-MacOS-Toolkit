@@ -172,12 +172,17 @@ bdfs-vm-provision:
 	    $(if $(VM_DATA_DIR),--data-dir $(VM_DATA_DIR),) \
 	    --ssh-port $(VM_SSH_PORT) \
 	    shell /dev/null &
-	@echo "Waiting for VM SSH on port $(VM_SSH_PORT) ..."
-	@for i in $$(seq 1 60); do \
+	@echo "Waiting for cloud-init to complete on port $(VM_SSH_PORT) ..."
+	@# Poll for the cloud-init sentinel file rather than just SSH readiness.
+	@# SSH becomes available before cloud-init finishes installing packages,
+	@# so polling 'true' causes bdfs-vm-install to race the package manager.
+	@# 90 iterations × 2 s = 3 minutes, enough for Debian/Ubuntu first boot.
+	@for i in $$(seq 1 90); do \
 	    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 	        -o ConnectTimeout=2 -o BatchMode=yes \
 	        $(if $(VM_SSH_KEY),-i $(VM_SSH_KEY),) \
-	        -p $(VM_SSH_PORT) $(_EFFECTIVE_VM_USER)@127.0.0.1 true 2>/dev/null \
+	        -p $(VM_SSH_PORT) $(_EFFECTIVE_VM_USER)@127.0.0.1 \
+	        'test -f /run/cloud-init-custom-done' 2>/dev/null \
 	        && break; \
 	    sleep 2; \
 	done

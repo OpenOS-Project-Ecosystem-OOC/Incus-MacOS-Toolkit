@@ -79,22 +79,24 @@ log "Installing DwarFS tools ..."
 
 DWARFS_VER="0.9.10"
 ARCH="$(uname -m)"
-DWARFS_URL="https://github.com/mhx/dwarfs/releases/download/v${DWARFS_VER}/dwarfs-universal-${DWARFS_VER}-Linux-${ARCH}.tar.zst"
+# DwarFS releases a single multi-call universal binary (no tarball).
+# The binary name includes the compiler suffix; clang builds are the
+# only ones published for Linux x86_64 and aarch64.
+DWARFS_BIN="dwarfs-universal-${DWARFS_VER}-Linux-${ARCH}-clang"
+DWARFS_URL="https://github.com/mhx/dwarfs/releases/download/v${DWARFS_VER}/${DWARFS_BIN}"
 
 if ! command -v mkdwarfs >/dev/null 2>&1; then
-    TMP_DIR="$(mktemp -d)"
-    if wget -q "$DWARFS_URL" -O "$TMP_DIR/dwarfs.tar.zst" 2>/dev/null || \
-       curl -fsSL "$DWARFS_URL" -o "$TMP_DIR/dwarfs.tar.zst" 2>/dev/null; then
-        tar --zstd -xf "$TMP_DIR/dwarfs.tar.zst" -C "$TMP_DIR"
-        install -m755 "$TMP_DIR"/dwarfs-universal-*/sbin/mkdwarfs      "${INSTALL_PREFIX}/bin/mkdwarfs"
-        install -m755 "$TMP_DIR"/dwarfs-universal-*/sbin/dwarfs        "${INSTALL_PREFIX}/bin/dwarfs"
-        install -m755 "$TMP_DIR"/dwarfs-universal-*/sbin/dwarfsextract "${INSTALL_PREFIX}/bin/dwarfsextract"
-        install -m755 "$TMP_DIR"/dwarfs-universal-*/sbin/dwarfsck      "${INSTALL_PREFIX}/bin/dwarfsck"
+    if wget -q "$DWARFS_URL" -O "${INSTALL_PREFIX}/bin/dwarfs-universal" 2>/dev/null || \
+       curl -fsSL "$DWARFS_URL" -o "${INSTALL_PREFIX}/bin/dwarfs-universal" 2>/dev/null; then
+        chmod 755 "${INSTALL_PREFIX}/bin/dwarfs-universal"
+        # The universal binary is multi-call: symlink each tool name to it.
+        for tool in mkdwarfs dwarfs dwarfsextract dwarfsck; do
+            ln -sf dwarfs-universal "${INSTALL_PREFIX}/bin/${tool}"
+        done
         log "DwarFS tools installed"
     else
         log "WARNING: could not download DwarFS tools — bdfs export/import will not work"
     fi
-    rm -rf "$TMP_DIR"
 else
     log "DwarFS tools already installed"
 fi

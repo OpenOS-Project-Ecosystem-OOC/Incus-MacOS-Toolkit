@@ -74,6 +74,22 @@ func (v *VM) RunScript(script string) (string, error) {
 	return string(out), nil
 }
 
+// RunScriptOnPort executes a shell script inside a VM reachable at the given
+// host SSH port. Unlike RunScript it does not require a live *VM object,
+// making it usable from the unmount path where only the recorded SSHPort is
+// known.
+func RunScriptOnPort(sshPort uint16, user, keyPath, script string) (string, error) {
+	opts := SSHOptions{Port: sshPort, User: user, KeyPath: keyPath}
+	args := append(opts.sshArgs(), "sudo", "sh", "-s")
+	cmd := exec.Command("ssh", args...)
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("ssh script: %w\n%s", err, out)
+	}
+	return string(out), nil
+}
+
 // WaitForPort polls host:port inside the VM (via SSH) until it accepts
 // connections or the timeout expires. Used to wait for share servers.
 // Uses ss (iproute2) which is present on all supported distros; falls back

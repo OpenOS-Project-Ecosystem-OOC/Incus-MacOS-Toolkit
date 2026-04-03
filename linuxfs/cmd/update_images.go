@@ -123,11 +123,16 @@ func checkAndUpdate(p vm.Provider, arch vm.Arch, cacheD string, checkOnly bool) 
 	}
 
 	// Remove old images for this provider.
+	// Skip overlay files (named <base>.overlay.<pid>.qcow2) — they are
+	// ephemeral copy-on-write layers for running VMs and must not be deleted.
 	for _, old := range currentFiles {
 		if old == imagePath {
 			continue
 		}
 		if strings.HasSuffix(old, ".tmp") {
+			continue
+		}
+		if strings.Contains(filepath.Base(old), ".overlay.") {
 			continue
 		}
 		fmt.Printf("[%s] Removing old image: %s\n", p.Name(), filepath.Base(old))
