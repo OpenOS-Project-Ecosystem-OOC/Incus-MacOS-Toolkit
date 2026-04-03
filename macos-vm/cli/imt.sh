@@ -46,6 +46,7 @@ Commands:
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
   publish         Create, list, and delete Incus images from macOS VMs
+  host-exec       Run a host command from inside the macOS VM via nsenter
   tui             Launch interactive terminal UI (requires dialog or whiptail)
   dashboard       Launch web monitoring dashboard (requires socat/ncat/python3)
   profiles        Manage Incus profiles (list, install, diff, apply)
@@ -1991,7 +1992,9 @@ Examples:
   imt vm net status --name macos-sonoma
 EOF
             ;;
+
         *) die "Unknown net subcommand: ${subcmd}. Run: imt vm net help" ;;
+
     esac
 }
 
@@ -2173,8 +2176,16 @@ cmd_vm_usb() {
 
         attach|add)
             local vid="${1:?Usage: imt vm usb attach VID PID [--name VM]}"
-            local pid="${2:?Usage: imt vm usb attach VID PID [--name VM]}"
-            shift 2
+            local pid="${2:-}"
+            # Support VID:PID as a single argument (e.g. 046d:c52b)
+            if [[ -z "${pid}" && "${vid}" == *:* ]]; then
+                pid="${vid##*:}"
+                vid="${vid%%:*}"
+                shift 1
+            else
+                [[ -n "${pid}" ]] || die "Usage: imt vm usb attach VID PID [--name VM]"
+                shift 2
+            fi
             local dev_name="" version="${IMT_VERSION:-sonoma}" vm_name=""
             while [[ $# -gt 0 ]]; do
                 case "$1" in
@@ -3283,6 +3294,33 @@ EOF
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
+# ── host-exec ─────────────────────────────────────────────────────────────────
+
+cmd_host_exec() {
+    [[ $# -gt 0 ]] || die "Usage: imt host-exec COMMAND [ARGS...]"
+    local vm_name="${IMT_VM_NAME:-macos-${IMT_VERSION:-sonoma}}"
+
+    # Allow --name to override the VM
+    if [[ "${1:-}" == "--name" ]]; then
+        vm_name="$2"; shift 2
+    fi
+
+    require_incus
+
+    # Run the command on the host via nsenter from inside the VM.
+    # Falls back to chroot /run/host for unprivileged VMs.
+    local cmd_str
+    cmd_str="$(printf '%q ' "$@")"
+    incus exec "${vm_name}" -- sh -c \
+        "if [ -r /proc/1/ns/mnt ]; then
+             exec nsenter --mount=/proc/1/ns/mnt --uts=/proc/1/ns/uts \
+                          --ipc=/proc/1/ns/ipc --net=/proc/1/ns/net \
+                          --pid=/proc/1/ns/pid --target=1 -- ${cmd_str}
+         else
+             exec chroot /run/host ${cmd_str}
+         fi"
+}
+
 # ── shell completion ──────────────────────────────────────────────────────────
 
 cmd_completion() {
@@ -3397,6 +3435,7 @@ main() {
         profiles)       cmd_profiles   "$@" ;;
         publish)        cmd_publish    "$@" ;;
         setup-rootless) cmd_setup_rootless "$@" ;;
+        host-exec)      cmd_host_exec  "$@" ;;
         update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
