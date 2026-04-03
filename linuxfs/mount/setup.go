@@ -288,6 +288,14 @@ printf "${EXPORT_PATH} 127.0.0.1(${EXPORT_OPTS})\n${EXPORT_PATH} 0.0.0.0/0(${EXP
     >> /tmp/exports.tmp
 cp /tmp/exports.tmp /etc/exports
 
+# Allow all NFS-related RPC services through TCP wrappers (if present).
+# Without this, rpc.mountd compiled with libwrap may deny connections
+# from 127.0.0.1 if /etc/hosts.deny has a restrictive default.
+if [ -f /etc/hosts.allow ]; then
+    grep -q 'mountd\|rpcbind\|ALL' /etc/hosts.allow 2>/dev/null || \
+        printf 'rpcbind: ALL\nmountd: ALL\n' >> /etc/hosts.allow
+fi
+
 # Load nfsd kernel module explicitly (required on cloud kernels).
 modprobe nfsd 2>/dev/null || true
 modprobe nfs  2>/dev/null || true
