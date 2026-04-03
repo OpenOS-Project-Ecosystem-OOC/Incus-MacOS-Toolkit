@@ -310,6 +310,17 @@ jobs:
           # Purge the entire linuxfs cache so stale seed ISOs and base images
           # from previous runs never bleed into this job.
           sudo rm -rf /home/runner/.cache/linuxfs/ || true
+      - name: Stop host NFS services (prevent interference with VM forwarded ports)
+        run: |
+          # The host's rpcbind/nfs-kernel-server would intercept NFS traffic
+          # meant for the VM's forwarded ports. Stop them before the test.
+          sudo systemctl stop nfs-kernel-server nfs-mountd nfsd rpcbind 2>/dev/null || true
+          sudo systemctl disable nfs-kernel-server rpcbind 2>/dev/null || true
+          # Unload nfsd kernel module so the host kernel doesn't handle NFS frames
+          sudo modprobe -r nfsd 2>/dev/null || true
+          # Confirm port 2049 is free on the host
+          ss -tlnp | grep ':2049' && echo "WARNING: port 2049 still in use on host" || echo "port 2049 free on host"
+
       - name: Run integration test (as root for NFS mount)
         working-directory: linuxfs
         # sudo -E preserves the Go environment set up by setup-go.
