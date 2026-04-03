@@ -277,8 +277,11 @@ fi
 	fmt.Fprintf(&b, `
 # Export the mount point.
 # fsid=0 makes /mnt/linuxfs the NFS root so the client mounts path /.
+# Use 0.0.0.0/0 (CIDR wildcard) rather than * so that loopback clients
+# (127.0.0.1 via QEMU hostfwd) are explicitly matched — some mountd
+# implementations do not match 127.0.0.1 against the * glob.
 grep -qF '%s' /etc/exports 2>/dev/null || \
-    echo '%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=0%s)' >> /etc/exports
+    echo '%s 0.0.0.0/0(rw,sync,no_subtree_check,no_root_squash,fsid=0%s)' >> /etc/exports
 
 # Load nfsd kernel module explicitly (required on cloud kernels).
 modprobe nfsd 2>/dev/null || true
