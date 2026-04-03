@@ -420,7 +420,7 @@ YAML schema:
       version: sonoma             # macOS version (default: sonoma)
       ram: 4GiB                   # RAM (default: 4GiB)
       cpus: 4                     # CPU count (default: 4)
-      disk: 128GiB                # Disk size (default: 128GiB)
+      # disk: not supported here — set via 'imt image build --size'
 
 Example:
   vms:
@@ -477,13 +477,14 @@ EOF
     local i=0
     while [[ "$i" -lt "$vm_count" ]]; do
         # Extract per-VM variables from parsed output
-        local vm_name="" vm_version="" vm_ram="" vm_cpus="" vm_disk=""
+        local vm_name="" vm_version="" vm_ram="" vm_cpus=""
         while IFS= read -r line; do
             [[ "$line" =~ ^V${i}_name=(.+)$    ]] && vm_name="${BASH_REMATCH[1]}"
             [[ "$line" =~ ^V${i}_version=(.+)$ ]] && vm_version="${BASH_REMATCH[1]}"
             [[ "$line" =~ ^V${i}_ram=(.+)$     ]] && vm_ram="${BASH_REMATCH[1]}"
             [[ "$line" =~ ^V${i}_cpus=(.+)$    ]] && vm_cpus="${BASH_REMATCH[1]}"
-            [[ "$line" =~ ^V${i}_disk=(.+)$    ]] && vm_disk="${BASH_REMATCH[1]}"
+            # disk: field is parsed but not used — disk size is set by the
+            # storage volume, not passed to imt vm create.
         done <<< "$parsed"
 
         [[ -z "$vm_name" ]] && { warn "VM $i has no name, skipping"; i=$((i+1)); continue; }
@@ -508,7 +509,8 @@ EOF
         [[ -n "$vm_version" ]] && create_args+=(--version "$vm_version")
         [[ -n "$vm_ram"     ]] && create_args+=(--ram     "$vm_ram")
         [[ -n "$vm_cpus"    ]] && create_args+=(--cpus    "$vm_cpus")
-        [[ -n "$vm_disk"    ]] && create_args+=(--disk    "$vm_disk")
+        # --disk is not passed: imt vm create has no --disk flag; disk size
+        # is set by the storage volume built by 'imt image build --size'.
 
         if incus info "$vm_name" &>/dev/null 2>&1; then
             log "VM '$vm_name' already exists — skipping (use --replace to recreate)."
