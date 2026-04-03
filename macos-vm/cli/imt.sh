@@ -180,6 +180,7 @@ cmd_vm() {
         delete)   cmd_vm_delete  "$@" ;;
         list)     cmd_vm_list    "$@" ;;
         upgrade)  cmd_vm_upgrade "$@" ;;
+        disk)     cmd_vm_disk    "$@" ;;
         help|--help|-h)
             cat <<EOF
 Usage: imt vm <subcommand> [options]
@@ -206,6 +207,7 @@ Subcommands:
   delete    Delete the VM and its installer storage volume
   list      List all imt-managed VMs
   upgrade   Run macOS Software Update inside a running VM
+  disk      Live disk resize (resize, info)
 
 Common options:
   --name NAME       Incus instance name (default: macos-<version>)
@@ -1529,6 +1531,132 @@ cmd_vm_list() {
     # profile name would never match any data row.
     incus list --format table --columns nstL | \
         awk 'NR<=2 || /macos-kvm/'
+}
+
+# ── vm disk ──────────────────────────────────────────────────────────────────
+
+cmd_vm_disk() {
+    # Live disk resize for macOS VMs.
+    #
+    # macOS VMs use a QCOW2 storage volume (<name>-disk) in Incus.
+    # Resizing requires:
+    #   1. Stopping the VM
+    #   2. Resizing the Incus storage volume (incus storage volume set size)
+    #   3. Restarting the VM — macOS will see the larger disk on next boot
+    #
+    # Usage: imt vm disk <subcommand> [options]
+    #
+    # Subcommands:
+    #   resize   Resize the VM disk
+    #   info     Show current disk size
+
+    local subcmd="${1:-help}"; shift || true
+
+    case "${subcmd}" in
+        resize)
+            local name="" version="${IMT_VERSION:-sonoma}" new_size=""
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --name)    name="$2";     shift 2 ;;
+                    --version) version="$2";  shift 2 ;;
+                    --size)    new_size="$2"; shift 2 ;;
+                    --help|-h)
+                        cat <<EOF
+imt vm disk resize — resize a macOS VM's disk
+
+Usage: imt vm disk resize --size SIZE [--name NAME] [--version VER]
+
+Options:
+  --size SIZE      New disk size (e.g. 128G, 256G) — required
+  --name NAME      VM name (default: macos-<version>)
+  --version VER    macOS version (default: sonoma)
+
+Note: The VM must be stopped before resizing. macOS will see the
+larger disk on next boot; use Disk Utility to expand the partition.
+
+Examples:
+  imt vm disk resize --size 256G
+  imt vm disk resize --name macos-ventura --size 200G
+EOF
+                        return 0 ;;
+                    *) die "Unknown option: $1. Run: imt vm disk resize --help" ;;
+                esac
+            done
+
+            [[ -z "${name}" ]] && name="macos-${version}"
+            [[ -n "${new_size}" ]] || die "--size is required"
+            require_incus
+
+            if ! incus info "${name}" &>/dev/null 2>&1; then
+                die "VM '${name}' does not exist"
+            fi
+
+            local state
+            state=$(incus list --format csv -c s "${name}" 2>/dev/null | head -1)
+            if [[ "${state}" = "RUNNING" ]]; then
+                die "VM '${name}' is running. Stop it first: imt vm stop --name ${name}"
+            fi
+
+            local vol="${name}-disk"
+            local pool="${IMT_STORAGE_POOL:-default}"
+
+            info "Resizing storage volume '${vol}' in pool '${pool}' to ${new_size}..."
+            incus storage volume set "${pool}" "${vol}" size "${new_size}"
+            ok "Disk resized to ${new_size}"
+            info "Start the VM and use Disk Utility to expand the partition:"
+            info "  imt vm start --name ${name}"
+            ;;
+
+        info)
+            local name="" version="${IMT_VERSION:-sonoma}"
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --name)    name="$2";    shift 2 ;;
+                    --version) version="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+
+            [[ -z "${name}" ]] && name="macos-${version}"
+            require_incus
+
+            if ! incus info "${name}" &>/dev/null 2>&1; then
+                die "VM '${name}' does not exist"
+            fi
+
+            local vol="${name}-disk"
+            local pool="${IMT_STORAGE_POOL:-default}"
+
+            info "Disk info for VM: ${name}"
+            echo ""
+            info "  Storage volume : ${vol}"
+            info "  Pool           : ${pool}"
+            echo ""
+            incus storage volume show "${pool}" "${vol}" 2>/dev/null \
+                | grep -E 'name:|config:|size:' | sed 's/^/  /' || true
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+imt vm disk — live disk resize for macOS VMs
+
+Usage: imt vm disk <subcommand> [options]
+
+Subcommands:
+  resize   Resize the VM's QCOW2 storage volume
+  info     Show current disk size and pool info
+
+Examples:
+  imt vm disk info
+  imt vm disk resize --size 256G
+  imt vm disk resize --name macos-ventura --size 200G
+EOF
+            ;;
+
+        *) die "Unknown disk subcommand: ${subcmd}. Run: imt vm disk help" ;;
+    esac
 }
 
 # ── vm upgrade ───────────────────────────────────────────────────────────────
