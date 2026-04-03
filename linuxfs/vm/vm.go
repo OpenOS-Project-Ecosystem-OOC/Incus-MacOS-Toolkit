@@ -133,20 +133,6 @@ func (v *VM) startQEMU() error {
 		return fmt.Errorf("vm image: %w", err)
 	}
 
-	// Create a throwaway overlay so the base image is never modified.
-	// Each VM start gets a fresh disk state; the overlay is deleted on Stop.
-	vmImage := baseImage + ".overlay.qcow2"
-	_ = os.Remove(vmImage) // remove any leftover from a previous run
-	if out, err := exec.Command("qemu-img", "create",
-		"-f", "qcow2",
-		"-b", baseImage,
-		"-F", format,
-		vmImage,
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("qemu-img create overlay: %w\n%s", err, out)
-	}
-	v.overlayPath = vmImage
-
 	cacheD := v.cfg.DataDir
 	if cacheD == "" {
 		cacheD, err = cacheDir()
@@ -169,6 +155,20 @@ func (v *VM) startQEMU() error {
 
 	accel := accelFlag()
 	format := v.provider.ImageFormat()
+
+	// Create a throwaway overlay so the base image is never modified.
+	// Each VM start gets a fresh disk state; the overlay is deleted on Stop.
+	vmImage := baseImage + ".overlay.qcow2"
+	_ = os.Remove(vmImage) // remove any leftover from a previous run
+	if out, err := exec.Command("qemu-img", "create",
+		"-f", "qcow2",
+		"-b", baseImage,
+		"-F", format,
+		vmImage,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create overlay: %w\n%s", err, out)
+	}
+	v.overlayPath = vmImage
 
 	serialDev := "null"
 	if v.cfg.Debug {
