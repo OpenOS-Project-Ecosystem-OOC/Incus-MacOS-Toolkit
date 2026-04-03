@@ -45,7 +45,11 @@ Commands:
   cloud-sync  Sync VM backups to cloud storage via rclone
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
-  update      Check for and install imt updates
+  tui             Launch interactive terminal UI (requires dialog or whiptail)
+  dashboard       Launch web monitoring dashboard (requires socat/ncat/python3)
+  profiles        Manage Incus profiles (list, install, diff, apply)
+  setup-rootless  Configure the system for rootless VM operation via incus-user
+  update          Check for and install imt updates
   doctor      Check prerequisites
   config      Show or initialise configuration
   version     Print version
@@ -177,6 +181,8 @@ cmd_vm() {
         assemble) cmd_vm_assemble "$@" ;;
         delete)   cmd_vm_delete  "$@" ;;
         list)     cmd_vm_list    "$@" ;;
+        upgrade)  cmd_vm_upgrade "$@" ;;
+        disk)     cmd_vm_disk    "$@" ;;
         help|--help|-h)
             cat <<EOF
 Usage: imt vm <subcommand> [options]
@@ -202,6 +208,8 @@ Subcommands:
   assemble  Create/update VMs from a declarative YAML file
   delete    Delete the VM and its installer storage volume
   list      List all imt-managed VMs
+  upgrade   Run macOS Software Update inside a running VM
+  disk      Live disk resize (resize, info)
 
 Common options:
   --name NAME       Incus instance name (default: macos-<version>)
@@ -1527,6 +1535,228 @@ cmd_vm_list() {
         awk 'NR<=2 || /macos-kvm/'
 }
 
+# ── vm disk ──────────────────────────────────────────────────────────────────
+
+cmd_vm_disk() {
+    # Live disk resize for macOS VMs.
+    #
+    # macOS VMs use a QCOW2 storage volume (<name>-disk) in Incus.
+    # Resizing requires:
+    #   1. Stopping the VM
+    #   2. Resizing the Incus storage volume (incus storage volume set size)
+    #   3. Restarting the VM — macOS will see the larger disk on next boot
+    #
+    # Usage: imt vm disk <subcommand> [options]
+    #
+    # Subcommands:
+    #   resize   Resize the VM disk
+    #   info     Show current disk size
+
+    local subcmd="${1:-help}"; shift || true
+
+    case "${subcmd}" in
+        resize)
+            local name="" version="${IMT_VERSION:-sonoma}" new_size=""
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --name)    name="$2";     shift 2 ;;
+                    --version) version="$2";  shift 2 ;;
+                    --size)    new_size="$2"; shift 2 ;;
+                    --help|-h)
+                        cat <<EOF
+imt vm disk resize — resize a macOS VM's disk
+
+Usage: imt vm disk resize --size SIZE [--name NAME] [--version VER]
+
+Options:
+  --size SIZE      New disk size (e.g. 128G, 256G) — required
+  --name NAME      VM name (default: macos-<version>)
+  --version VER    macOS version (default: sonoma)
+
+Note: The VM must be stopped before resizing. macOS will see the
+larger disk on next boot; use Disk Utility to expand the partition.
+
+Examples:
+  imt vm disk resize --size 256G
+  imt vm disk resize --name macos-ventura --size 200G
+EOF
+                        return 0 ;;
+                    *) die "Unknown option: $1. Run: imt vm disk resize --help" ;;
+                esac
+            done
+
+            [[ -z "${name}" ]] && name="macos-${version}"
+            [[ -n "${new_size}" ]] || die "--size is required"
+            require_incus
+
+            if ! incus info "${name}" &>/dev/null 2>&1; then
+                die "VM '${name}' does not exist"
+            fi
+
+            local state
+            state=$(incus list --format csv -c s "${name}" 2>/dev/null | head -1)
+            if [[ "${state}" = "RUNNING" ]]; then
+                die "VM '${name}' is running. Stop it first: imt vm stop --name ${name}"
+            fi
+
+            local vol="${name}-disk"
+            local pool="${IMT_STORAGE_POOL:-default}"
+
+            info "Resizing storage volume '${vol}' in pool '${pool}' to ${new_size}..."
+            incus storage volume set "${pool}" "${vol}" size "${new_size}"
+            ok "Disk resized to ${new_size}"
+            info "Start the VM and use Disk Utility to expand the partition:"
+            info "  imt vm start --name ${name}"
+            ;;
+
+        info)
+            local name="" version="${IMT_VERSION:-sonoma}"
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --name)    name="$2";    shift 2 ;;
+                    --version) version="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+
+            [[ -z "${name}" ]] && name="macos-${version}"
+            require_incus
+
+            if ! incus info "${name}" &>/dev/null 2>&1; then
+                die "VM '${name}' does not exist"
+            fi
+
+            local vol="${name}-disk"
+            local pool="${IMT_STORAGE_POOL:-default}"
+
+            info "Disk info for VM: ${name}"
+            echo ""
+            info "  Storage volume : ${vol}"
+            info "  Pool           : ${pool}"
+            echo ""
+            incus storage volume show "${pool}" "${vol}" 2>/dev/null \
+                | grep -E 'name:|config:|size:' | sed 's/^/  /' || true
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+imt vm disk — live disk resize for macOS VMs
+
+Usage: imt vm disk <subcommand> [options]
+
+Subcommands:
+  resize   Resize the VM's QCOW2 storage volume
+  info     Show current disk size and pool info
+
+Examples:
+  imt vm disk info
+  imt vm disk resize --size 256G
+  imt vm disk resize --name macos-ventura --size 200G
+EOF
+            ;;
+
+        *) die "Unknown disk subcommand: ${subcmd}. Run: imt vm disk help" ;;
+    esac
+}
+
+# ── vm upgrade ───────────────────────────────────────────────────────────────
+
+cmd_vm_upgrade() {
+    # Run macOS Software Update inside a running VM.
+    #
+    # Usage: imt vm upgrade [--name NAME] [--version VER] [--list] [--restart]
+    #
+    # Options:
+    #   --name NAME      Incus instance name (default: macos-<version>)
+    #   --version VER    macOS version used to derive default name
+    #   --list           List available updates without installing
+    #   --restart        Restart the VM after updates are applied
+    #   --no-snapshot    Skip the pre-upgrade snapshot
+    #   --help           Show this help
+
+    local name="" version="${IMT_VERSION:-sonoma}" list_only=0 do_restart=0 no_snapshot=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name)      name="$2";    shift 2 ;;
+            --version)   version="$2"; shift 2 ;;
+            --list)      list_only=1;  shift ;;
+            --restart)   do_restart=1; shift ;;
+            --no-snapshot) no_snapshot=1; shift ;;
+            --help|-h)
+                cat <<EOF
+imt vm upgrade — run macOS Software Update inside a running VM
+
+Usage: imt vm upgrade [options]
+
+Options:
+  --name NAME      Incus instance name (default: macos-<version>)
+  --version VER    macOS version used to derive default name (default: sonoma)
+  --list           List available updates without installing
+  --restart        Restart the VM after updates are applied
+  --no-snapshot    Skip the pre-upgrade snapshot (not recommended)
+
+Examples:
+  imt vm upgrade
+  imt vm upgrade --name macos-ventura --list
+  imt vm upgrade --name macos-sonoma --restart
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1. Run: imt vm upgrade --help" ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && name="macos-${version}"
+    require_incus
+
+    # Verify the VM exists and is running
+    if ! incus info "$name" &>/dev/null; then
+        die "VM '$name' does not exist"
+    fi
+    local state
+    state=$(incus list --format csv -c s "$name" 2>/dev/null | head -1)
+    if [[ "$state" != "RUNNING" ]]; then
+        die "VM '$name' is not running. Start it first: imt vm start --name $name"
+    fi
+
+    if [[ "$list_only" -eq 1 ]]; then
+        info "Checking for available updates in '$name'..."
+        incus exec "$name" -- /bin/bash -c \
+            'softwareupdate --list 2>&1' \
+            || die "softwareupdate --list failed (is macOS booted?)"
+        return 0
+    fi
+
+    # Pre-upgrade snapshot
+    if [[ "$no_snapshot" -eq 0 ]]; then
+        local snap_name
+        snap_name="pre-upgrade-$(date +%Y%m%d-%H%M%S)"
+        info "Creating pre-upgrade snapshot: $snap_name"
+        if incus snapshot create "$name" "$snap_name"; then
+            ok "Snapshot created: $snap_name"
+        else
+            warn "Snapshot failed — continuing without it"
+        fi
+    fi
+
+    info "Running Software Update in '$name' (this may take a while)..."
+    incus exec "$name" -- /bin/bash -c \
+        'softwareupdate --install --all --verbose 2>&1' \
+        || die "softwareupdate failed"
+
+    ok "Software Update complete in '$name'"
+
+    if [[ "$do_restart" -eq 1 ]]; then
+        info "Restarting '$name'..."
+        incus exec "$name" -- /bin/bash -c 'shutdown -r now' 2>/dev/null || true
+        ok "Restart initiated"
+    else
+        info "Restart may be required. Run: imt vm upgrade --name $name --restart"
+    fi
+}
+
 # ── doctor command ────────────────────────────────────────────────────────────
 
 cmd_doctor() {
@@ -2228,6 +2458,383 @@ EOF
     esac
 }
 
+# ── dashboard ────────────────────────────────────────────────────────────────
+
+cmd_dashboard() {
+    local _script_dir
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local dash_script="${_script_dir}/../tui/imt-dashboard.sh"
+
+    if [[ -x "${dash_script}" ]]; then
+        exec "${dash_script}" "$@"
+    else
+        die "Dashboard script not found at ${dash_script}"
+    fi
+}
+
+# ── tui ──────────────────────────────────────────────────────────────────────
+
+cmd_tui() {
+    # Interactive terminal UI for imt.
+    # Requires dialog or whiptail.
+
+    local _imt_script_dir
+    _imt_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local tui_script="${_imt_script_dir}/../tui/imt-tui.sh"
+
+    if [[ -x "${tui_script}" ]]; then
+        exec "${tui_script}" "$@"
+    else
+        die "TUI script not found at ${tui_script}. Run: imt tui --help"
+    fi
+}
+
+# ── setup-rootless ───────────────────────────────────────────────────────────
+
+cmd_setup_rootless() {
+    # Guided setup for running macOS VMs as a non-root user via incus-user.
+    #
+    # Checks and optionally fixes:
+    #   1. Not running as root
+    #   2. incus-user daemon (systemd user service + socket)
+    #   3. KVM device access (/dev/kvm, kvm group)
+    #   4. subuid/subgid delegation
+    #   5. macos-kvm Incus profile registered in incus-user
+    #
+    # Usage: imt setup-rootless [--fix] [--yes] [--help]
+
+    local fix=0
+    local issues=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fix)       fix=1; shift ;;
+            -Y|--yes)    fix=1; shift ;;
+            --help|-h)
+                cat <<EOF
+imt setup-rootless — configure the system for rootless macOS VM operation
+
+Checks and configures:
+  1. User is not root
+  2. incus-user daemon (systemd user service)
+  3. KVM device access (/dev/kvm, kvm group membership)
+  4. UID/GID delegation (subuid/subgid)
+  5. macos-kvm Incus profile registered in incus-user
+
+Usage: imt setup-rootless [--fix] [--yes]
+
+Options:
+  --fix    Attempt to automatically fix detected issues
+  --yes    Non-interactive (implies --fix)
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1. Run: imt setup-rootless --help" ;;
+        esac
+    done
+
+    _sr_ok()   { printf '  \033[32m✔\033[0m  %s\n' "$*"; }
+    _sr_warn() { printf '  \033[33m⚠\033[0m  %s\n' "$*"; }
+    _sr_fail() { printf '  \033[31m✘\033[0m  %s\n' "$*"; issues=$((issues+1)); }
+    _sr_section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+    _sr_ask_fix() {
+        local msg="$1" cmd="$2"
+        if [[ "$fix" -eq 1 ]]; then
+            info "  Fixing: $msg"
+            if eval "$cmd"; then
+                _sr_ok "Fixed: $msg"
+            else
+                _sr_fail "Failed to fix: $msg"
+            fi
+        else
+            _sr_warn "$msg"
+            info "    Run: $cmd"
+            issues=$((issues+1))
+        fi
+    }
+
+    # 1. Not root
+    _sr_section "1. User check"
+    if [[ "$(id -ru)" -eq 0 ]]; then
+        die "Run as a regular user, not root."
+    fi
+    _sr_ok "Running as ${USER} (uid=$(id -ru))"
+
+    # 2. incus-user daemon
+    _sr_section "2. incus-user daemon"
+    local incus_user_socket="${XDG_RUNTIME_DIR:-/run/user/$(id -ru)}/incus/incus.socket"
+
+    if ! command -v incus &>/dev/null; then
+        _sr_fail "incus not found — install Incus: https://linuxcontainers.org/incus/"
+    else
+        _sr_ok "incus found: $(incus --version 2>/dev/null || true)"
+    fi
+
+    if [[ -S "${incus_user_socket}" ]]; then
+        _sr_ok "incus-user socket: ${incus_user_socket}"
+    else
+        if systemctl --user list-unit-files incus-user.service &>/dev/null 2>&1; then
+            if systemctl --user is-active incus-user.service &>/dev/null 2>&1; then
+                _sr_warn "incus-user.service active but socket not found — check: systemctl --user status incus-user.service"
+                issues=$((issues+1))
+            else
+                _sr_ask_fix \
+                    "Start and enable incus-user.service" \
+                    "systemctl --user enable --now incus-user.service"
+            fi
+        else
+            _sr_fail "incus-user.service not found — install incus-user package"
+        fi
+    fi
+
+    # 3. KVM access
+    _sr_section "3. KVM device access"
+    if [[ -c /dev/kvm ]]; then
+        local kvm_group
+        kvm_group="$(stat -c '%G' /dev/kvm 2>/dev/null || echo kvm)"
+        if id -nG "${USER}" | grep -qw "${kvm_group}"; then
+            _sr_ok "/dev/kvm accessible (member of group ${kvm_group})"
+        else
+            _sr_ask_fix \
+                "Add ${USER} to ${kvm_group} group for /dev/kvm access" \
+                "sudo usermod -aG ${kvm_group} ${USER}"
+            _sr_warn "Log out and back in (or run: newgrp ${kvm_group}) for group change to take effect"
+        fi
+    else
+        _sr_fail "/dev/kvm not found — KVM not available on this host"
+        info "    Check: lsmod | grep kvm && ls -la /dev/kvm"
+    fi
+
+    # 4. subuid/subgid
+    _sr_section "4. UID/GID delegation (subuid/subgid)"
+    for pair in "subuid:subuid" "subgid:subgid"; do
+        local file="/etc/${pair%%:*}" label="${pair##*:}"
+        if grep -q "^${USER}:" "${file}" 2>/dev/null; then
+            local range
+            range="$(grep "^${USER}:" "${file}" | head -1)"
+            _sr_ok "${label}: ${range}"
+        else
+            _sr_ask_fix \
+                "Add ${USER} to ${file}" \
+                "sudo usermod --add-sub${label}s 65536-131071 ${USER}"
+        fi
+    done
+
+    # 5. macos-kvm profile in incus-user
+    _sr_section "5. macos-kvm Incus profile"
+    local incus_cmd="incus"
+    [[ -S "${incus_user_socket}" ]] && export INCUS_SOCKET="${incus_user_socket}"
+
+    if ${incus_cmd} profile show macos-kvm &>/dev/null 2>&1; then
+        _sr_ok "macos-kvm profile registered"
+    else
+        local profile_yaml=""
+        local search_dir
+        search_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        for f in \
+            "${search_dir}/../incus/profile.yaml" \
+            "${HOME}/.local/share/imt/profiles/macos-kvm.yaml" \
+            "/usr/local/share/imt/profiles/macos-kvm.yaml"; do
+            [[ -f "$f" ]] && profile_yaml="$f" && break
+        done
+
+        if [[ -n "${profile_yaml}" ]]; then
+            _sr_ask_fix \
+                "Register macos-kvm profile" \
+                "${incus_cmd} profile create macos-kvm && ${incus_cmd} profile edit macos-kvm < ${profile_yaml}"
+        else
+            _sr_warn "macos-kvm profile not registered and YAML not found"
+            info "    Run: imt profiles install"
+            issues=$((issues+1))
+        fi
+    fi
+
+    # Summary
+    printf '\n'
+    if [[ "${issues}" -eq 0 ]]; then
+        printf '\033[32mAll checks passed. Rootless imt is ready.\033[0m\n\n'
+        printf 'Quick start:\n'
+        printf '  imt vm create --version sonoma --name macos-sonoma\n'
+    else
+        printf '\033[33m%d issue(s) found.\033[0m\n' "${issues}"
+        if [[ "${fix}" -eq 0 ]]; then
+            printf 'Re-run with --fix to attempt automatic fixes:\n'
+            printf '  imt setup-rootless --fix\n'
+        else
+            printf 'Some issues could not be fixed automatically.\n'
+        fi
+    fi
+}
+
+# ── profiles ─────────────────────────────────────────────────────────────────
+
+cmd_profiles() {
+    local subcmd="${1:-help}"; shift || true
+
+    # Profile directory: alongside this script, then standard locations
+    local _script_dir
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _profile_dirs=(
+        "${_script_dir}/../incus"
+        "${HOME}/.local/share/imt/profiles"
+        "/usr/local/share/imt/profiles"
+        "/usr/share/imt/profiles"
+    )
+
+    _imt_find_profile_dir() {
+        local d
+        for d in "${_profile_dirs[@]}"; do
+            [ -d "$d" ] && echo "$d" && return 0
+        done
+        die "No profile directory found"
+    }
+
+    _imt_find_profile_file() {
+        local name="$1"
+        local d
+        for d in "${_profile_dirs[@]}"; do
+            local f="${d}/${name}.yaml"
+            [ -f "$f" ] && echo "$f" && return 0
+        done
+        return 1
+    }
+
+    _imt_install_one() {
+        local name="$1" file="$2"
+        if incus profile show "$name" &>/dev/null 2>&1; then
+            incus profile edit "$name" < "$file"
+            ok "  updated : $name"
+        else
+            incus profile create "$name"
+            incus profile edit "$name" < "$file"
+            ok "  created : $name"
+        fi
+    }
+
+    case "$subcmd" in
+        list)
+            local pdir
+            pdir=$(_imt_find_profile_dir)
+            info "Available profiles (${pdir}):"
+            for f in "${pdir}"/*.yaml; do
+                [ -f "$f" ] || continue
+                local pname desc
+                pname=$(basename "$f" .yaml)
+                desc=$(grep -m1 '^description:' "$f" 2>/dev/null \
+                       | sed 's/^description:[[:space:]]*//' | tr -d '"' || true)
+                if [ -n "$desc" ]; then
+                    printf "  %-30s  %s\n" "$pname" "$desc"
+                else
+                    printf "  %s\n" "$pname"
+                fi
+            done
+            ;;
+
+        show)
+            local name="${1:?Usage: imt profiles show <name>}"
+            local file
+            file=$(_imt_find_profile_file "$name") \
+                || die "Profile not found: $name"
+            cat "$file"
+            ;;
+
+        install)
+            require_incus
+            local all=0 names=()
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --all) all=1; shift ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) names+=("$1"); shift ;;
+                esac
+            done
+            local pdir
+            pdir=$(_imt_find_profile_dir)
+            if [[ "$all" -eq 1 ]] || [[ "${#names[@]}" -eq 0 ]]; then
+                for f in "${pdir}"/*.yaml; do
+                    [ -f "$f" ] || continue
+                    _imt_install_one "$(basename "$f" .yaml)" "$f"
+                done
+            else
+                for n in "${names[@]}"; do
+                    local file
+                    file=$(_imt_find_profile_file "$n") \
+                        || die "Profile not found: $n"
+                    _imt_install_one "$n" "$file"
+                done
+            fi
+            ;;
+
+        diff)
+            require_incus
+            local pdir
+            pdir=$(_imt_find_profile_dir)
+            for f in "${pdir}"/*.yaml; do
+                [ -f "$f" ] || continue
+                local pname
+                pname=$(basename "$f" .yaml)
+                if incus profile show "$pname" &>/dev/null 2>&1; then
+                    local d
+                    d=$(diff <(incus profile show "$pname") "$f" || true)
+                    if [ -n "$d" ]; then
+                        info "--- $pname (incus vs local) ---"
+                        echo "$d"
+                    else
+                        ok "  $pname: in sync"
+                    fi
+                else
+                    warn "  $pname: not installed (run: imt profiles install $pname)"
+                fi
+            done
+            ;;
+
+        apply)
+            local ct="${1:?Usage: imt profiles apply <vm> <profile>}"
+            local profile="${2:?Usage: imt profiles apply <vm> <profile>}"
+            require_incus
+            incus profile show "$profile" &>/dev/null 2>&1 \
+                || die "Profile '$profile' not installed. Run: imt profiles install $profile"
+            incus profile add "$ct" "$profile"
+            ok "Applied profile '$profile' to VM '$ct'"
+            ;;
+
+        remove)
+            local ct="${1:?Usage: imt profiles remove <vm> <profile>}"
+            local profile="${2:?Usage: imt profiles remove <vm> <profile>}"
+            require_incus
+            incus profile remove "$ct" "$profile"
+            ok "Removed profile '$profile' from VM '$ct'"
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+imt profiles — manage Incus profiles for macOS VMs
+
+Usage: imt profiles <subcommand> [options]
+
+Subcommands:
+  list                    List available profile files
+  show <name>             Print a profile's YAML
+  install [--all] [name]  Install profile(s) into Incus
+  diff                    Compare local files with Incus
+  apply <vm> <profile>    Apply a profile to a VM
+  remove <vm> <profile>   Remove a profile from a VM
+
+Available profiles:
+  macos-kvm    macOS KVM profile (QEMU overrides, network, firmware paths)
+
+Examples:
+  imt profiles install
+  imt profiles show macos-kvm
+  imt profiles diff
+  imt profiles apply macos-sonoma macos-kvm
+EOF
+            ;;
+
+        *) die "Unknown profiles subcommand: $subcmd. Run: imt profiles help" ;;
+    esac
+}
+
 # ── Self-update ───────────────────────────────────────────────────────────────
 
 _IMT_GITHUB_REPO="Interested-Deving-1896/Incus-MacOS-Toolkit"
@@ -2632,6 +3239,10 @@ main() {
         cloud-sync)     cmd_cloud_sync "$@" ;;
         demo)           cmd_demo       "$@" ;;
         winesapos)      cmd_winesapos  "$@" ;;
+        tui)            cmd_tui        "$@" ;;
+        dashboard)      cmd_dashboard  "$@" ;;
+        profiles)       cmd_profiles   "$@" ;;
+        setup-rootless) cmd_setup_rootless "$@" ;;
         update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
