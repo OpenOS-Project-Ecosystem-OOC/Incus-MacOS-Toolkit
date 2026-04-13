@@ -72,6 +72,7 @@ jobs:
               echo "name=${BRANCH}" >> "$GITHUB_OUTPUT"
             else
               echo "Overlapping entry detected, skipping commit."
+              echo "changed=false" >> "$GITHUB_OUTPUT" # Set changed to false to prevent PR creation
               exit 0
             fi
           else
